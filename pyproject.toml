@@ -34,7 +34,7 @@ classifiers = [
 # support. See SECURITY.md → Dependency security.
 # Core deps only — basic usage (injection scan + PII regex fallback) works
 # fully offline with no heavy ML deps. RAGAS/Presidio are optional extras
-# with graceful fallback. See CLAUDE.md → graceful degradation.
+# with graceful fallback. See .devnotes.md → graceful degradation.
 dependencies = [
     "typer==0.21.1",
     "rich==14.3.1",
