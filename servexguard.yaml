@@ -1,0 +1,29 @@
+# servexguard.yaml — ServeXGuard configuration
+# Place this file in your project root.
+
+quality:
+  min_faithfulness: 0.80
+  min_relevancy: 0.75
+  min_context_recall: 0.70
+
+security:
+  check_pii: true
+  pii_entities:
+    - EMAIL_ADDRESS
+    - PHONE_NUMBER
+    - IBAN_CODE
+    - CREDIT_CARD
+    - PERSON
+  check_injection: true
+
+drift:
+  enabled: false
+  max_query_drift: 0.25
+  baseline_file: "data/baseline_embeddings.npy"
+
+dataset:
+  path: "data/golden_dataset.jsonl"
+
+output:
+  format: json  # json | terminal
+  path: "reports/servexguard_report.json"

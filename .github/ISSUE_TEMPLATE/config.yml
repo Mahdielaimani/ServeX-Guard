@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Ideas
+    url: https://github.com/Mahdielaimani/ServeX-Guard/discussions
+    about: "Have a question or want to discuss an idea before opening an Issue? Use Discussions."
+  - name: Security Vulnerability
+    url: https://github.com/Mahdielaimani/ServeX-Guard/security/policy
+    about: "Found a security issue? Do not open a public Issue — see SECURITY.md."

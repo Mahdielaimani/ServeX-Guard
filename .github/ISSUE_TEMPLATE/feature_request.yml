@@ -1,0 +1,44 @@
+name: Feature Request
+description: Propose a new feature or enhancement (required before any PR)
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature! Please note: PRs are only
+        accepted for Issues that have been discussed and approved
+        by the maintainer first. See CONTRIBUTING.md.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you implement this?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: implement
+    attributes:
+      label: Are you willing to implement this yourself?
+      options:
+        - "Yes — I'd like to submit a PR after this is approved"
+        - "No — just suggesting, happy for someone else to build it"
+    validations:
+      required: true
