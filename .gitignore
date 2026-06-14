@@ -17,7 +17,7 @@ htmlcov/
 .venv/
 venv/
 reports/
-CLAUDE.md
-CLAUDE.local.md
+.devnotes.md
+.devnotes.local.md
 .deepeval/
 .claude/

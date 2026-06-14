@@ -333,7 +333,7 @@ Apache 2.0 — free for commercial use.
 
 Built from production experience deploying RAG systems at Crédit Agricole du Maroc and OCP NutriCrops.
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-El%20Mahdi%20El%20Aimani-2563EB?logo=linkedin&logoColor=white)](https://linkedin.com/in/elaimani)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-El%20Mahdi%20El%20Aimani-2563EB?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/el-mahdi-el-aimani-bb5555227)
 [![GitHub](https://img.shields.io/badge/GitHub-Mahdielaimani-333?logo=github&logoColor=white)](https://github.com/Mahdielaimani)
 [![Instagram](https://img.shields.io/badge/Instagram-@elmahdi.ai-F97316?logo=instagram&logoColor=white)](https://instagram.com/elmahdi.ai)
 
