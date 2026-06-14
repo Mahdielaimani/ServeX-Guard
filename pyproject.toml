@@ -28,8 +28,10 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
-# All dependencies pinned to exact versions (==) to prevent supply-chain
-# attacks via unexpected updates. See SECURITY.md → Dependency security.
+# Deps pinned to exact versions (==) where the wheel is available across all
+# supported Python versions, for supply-chain safety. numpy uses a bounded
+# range because numpy 2.4.x requires Python >=3.11; the floor keeps 3.10
+# support. See SECURITY.md → Dependency security.
 # Core deps only — basic usage (injection scan + PII regex fallback) works
 # fully offline with no heavy ML deps. RAGAS/Presidio are optional extras
 # with graceful fallback. See CLAUDE.md → graceful degradation.
@@ -37,7 +39,7 @@ dependencies = [
     "typer==0.21.1",
     "rich==14.3.1",
     "pydantic==2.13.3",
-    "numpy==2.4.0",
+    "numpy>=1.26,<3",
     "pyyaml==6.0.3",
 ]
 
