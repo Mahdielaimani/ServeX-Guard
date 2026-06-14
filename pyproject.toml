@@ -103,3 +103,13 @@ strict = true
 [tool.hatch.build.targets.wheel]
 packages = ["servexguard"]
 include = ["servexguard/py.typed"]
+
+# Keep assets/ in the git repo (GitHub display) but out of the PyPI sdist.
+# The README logo is referenced by absolute raw.githubusercontent URL, so it
+# renders on both GitHub and PyPI without bundling the 1.4MB image.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "assets/",
+    ".github/",
+    ".deepeval/",
+]
