@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.jpeg" width="160" alt="ServeX Guard" />
+  <img src="https://raw.githubusercontent.com/Mahdielaimani/ServeX-Guard/main/assets/logo.jpeg" width="160" alt="ServeX Guard" />
 </p>
 
 <h1 align="center">ServeX Guard</h1>
