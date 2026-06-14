@@ -12,7 +12,6 @@ import builtins
 import sys
 import types
 
-import pandas as pd
 import pytest
 
 from servexguard.evaluator import evaluate_quality
@@ -22,8 +21,33 @@ SAMPLE = [
 ]
 
 
-def _install_fake_ragas(monkeypatch, df: pd.DataFrame) -> None:
-    """Register stub ragas/datasets modules whose evaluate() returns ``df``."""
+class _FakeColumn:
+    """Minimal stand-in for a pandas Series — just enough for .mean()."""
+
+    def __init__(self, values: list[float]):
+        self._values = values
+
+    def mean(self) -> float:
+        return sum(self._values) / len(self._values)
+
+
+class _FakeDataFrame:
+    """Minimal stand-in for a pandas DataFrame; df["col"] -> _FakeColumn."""
+
+    def __init__(self, columns: dict[str, list[float]]):
+        self._columns = columns
+
+    def __getitem__(self, key: str) -> _FakeColumn:
+        return _FakeColumn(self._columns[key])
+
+
+def _install_fake_ragas(monkeypatch, columns: dict[str, list[float]]) -> None:
+    """Register stub ragas/datasets modules.
+
+    ``evaluate().to_pandas()`` returns a pandas-free DataFrame stub built from
+    ``columns`` (metric name -> per-row scores), so the test needs no real
+    pandas/ragas install.
+    """
     datasets_mod = types.ModuleType("datasets")
 
     class FakeDataset:
@@ -35,7 +59,7 @@ def _install_fake_ragas(monkeypatch, df: pd.DataFrame) -> None:
 
     class FakeResult:
         def to_pandas(self):
-            return df
+            return _FakeDataFrame(columns)
 
     ragas_mod = types.ModuleType("ragas")
     ragas_mod.evaluate = lambda dataset, metrics: FakeResult()
@@ -84,15 +108,15 @@ def test_returns_all_metric_keys():
 
 def test_success_path_aggregates_mean(monkeypatch):
     """With RAGAS present, scores are the per-metric mean across rows."""
-    df = pd.DataFrame(
+    _install_fake_ragas(
+        monkeypatch,
         {
             "faithfulness": [0.9, 0.7],
             "answer_relevancy": [0.8, 0.6],
             "context_recall": [0.5, 0.5],
             "context_precision": [1.0, 0.0],
-        }
+        },
     )
-    _install_fake_ragas(monkeypatch, df)
 
     data = [
         {"question": "q1", "answer": "a1", "contexts": ["c1"]},
@@ -108,15 +132,15 @@ def test_success_path_aggregates_mean(monkeypatch):
 
 def test_success_path_missing_required_field_raises(monkeypatch):
     """A row missing a required field raises ValueError (not silently zeroed)."""
-    df = pd.DataFrame(
+    _install_fake_ragas(
+        monkeypatch,
         {
             "faithfulness": [1.0],
             "answer_relevancy": [1.0],
             "context_recall": [1.0],
             "context_precision": [1.0],
-        }
+        },
     )
-    _install_fake_ragas(monkeypatch, df)
 
     bad = [{"question": "q", "answer": "a"}]  # missing "contexts"
     with pytest.raises(ValueError, match="contexts"):
