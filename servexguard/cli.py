@@ -19,6 +19,7 @@ from rich.panel import Panel
 from servexguard import reporter
 from servexguard.config import load_config, merge_cli_overrides, write_default_config
 from servexguard.core import ServeXGuard
+from servexguard.uploader import DEFAULT_CLOUD_URL
 
 # Make emoji-rich output safe on legacy Windows consoles (cp1252) so the CLI
 # never crashes with UnicodeEncodeError. Best-effort; no-op where unsupported.
@@ -81,6 +82,16 @@ def check(
     ),
     fmt: str | None = typer.Option(
         None, "--format", "-f", help="Report format: terminal | json | markdown"
+    ),
+    upload: bool = typer.Option(
+        False, "--upload", help="Upload the report to ServeX Guard Cloud "
+        "(requires SERVEXGUARD_API_KEY)"
+    ),
+    cloud_url: str | None = typer.Option(
+        None, "--cloud-url", help=f"Cloud ingest endpoint [default: {DEFAULT_CLOUD_URL}]"
+    ),
+    project: str | None = typer.Option(
+        None, "--project", help="Cloud project name [default: default]"
     ),
 ) -> None:
     """
@@ -179,6 +190,24 @@ def check(
         else:
             reporter.to_json(result, out_path, dataset_path)
         console.print(f"\n[dim]📄 Report saved to: {out_path}[/]")
+
+    # Ship the already-computed report to the Cloud. Never affects the verdict
+    # or the exit code — a failed upload is a warning, not a broken pipeline.
+    if upload:
+        from servexguard import uploader
+
+        if uploader.upload(
+            result,
+            project=project or "default",
+            dataset_path=dataset_path,
+            cloud_url=cloud_url,
+        ):
+            console.print("\n[dim]☁️  Uploaded to ServeX Guard Cloud[/]")
+        else:
+            console.print(
+                "\n[yellow]⚠️  Cloud upload failed — run result is unaffected.[/]\n"
+                "[dim]   Check SERVEXGUARD_API_KEY and --cloud-url.[/]"
+            )
 
     console.print()
     if result.passed:

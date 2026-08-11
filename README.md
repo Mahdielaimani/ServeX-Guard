@@ -121,6 +121,25 @@ servexguard check \
   --output report.json
 ```
 
+### Send results to ServeX Guard Cloud (optional)
+
+`--upload` posts the computed report to your Cloud dashboard. Everything is still
+computed locally — the Cloud only receives the finished JSON.
+
+```bash
+export SERVEXGUARD_API_KEY=sxg_...          # from dashboard.servexguard.com → Settings
+servexguard check --dataset golden_dataset.jsonl --upload --project my-rag-app
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--upload` | off | Post the report to the Cloud |
+| `--project` | `default` | Cloud project name (created on first upload) |
+| `--cloud-url` | `https://api.servexguard.com/v1/runs` | Override the ingest endpoint (or `SERVEXGUARD_CLOUD_URL`) |
+
+An upload failure never fails the run: it prints a warning and keeps the exit code
+from your quality gate.
+
 ### Use in Python
 
 ```python
