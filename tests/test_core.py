@@ -38,3 +38,28 @@ def test_security_failures_read_in_the_right_direction():
     ])
     assert result.failures[0] == "injection_scan: 1 risk found (max 0)"
     assert result.failures[1] == "faithfulness: 0.410 below the 0.8 threshold"
+
+
+def test_demo_datasets_do_what_the_narration_claims(tmp_path, monkeypatch):
+    """The demo only works if the flawed set fails and the clean set passes.
+
+    Asserted rather than assumed: this is the first thing a new user runs, and
+    a demo whose "after" still failed would be worse than shipping none.
+    """
+    from servexguard.core import ServeXGuard
+    from servexguard.demo import CLEAN, FLAWED, write_dataset
+
+    monkeypatch.chdir(tmp_path)
+    guard = ServeXGuard(check_pii=True, check_injection=True, language="fr")
+
+    before = guard.check(str(write_dataset(FLAWED, tmp_path / "flawed.jsonl")))
+    assert before.passed is False
+    assert before.exit_code == 1
+    names = {c.name for c in before.checks if not c.passed
+             and c.status != __import__("servexguard.core", fromlist=["x"]).CheckStatus.SKIPPED}
+    assert names == {"pii_scan", "injection_scan"}
+
+    after = guard.check(str(write_dataset(CLEAN, tmp_path / "clean.jsonl")))
+    assert after.passed is True
+    assert after.exit_code == 0
+    assert after.failures == []
