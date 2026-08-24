@@ -59,15 +59,29 @@ class GuardResult:
     def passed(self) -> bool:
         return all(c.passed or c.status == CheckStatus.SKIPPED for c in self.checks)
 
+    # Quality metrics fail by falling below a floor; security checks fail by
+    # counting above a ceiling. Printing both as "score < threshold" made every
+    # security failure read backwards, e.g. "injection_scan: 1.000 < 0.0".
+    _COUNT_CHECKS = {"pii_scan", "injection_scan"}
+
     @property
     def failures(self) -> list[str]:
-        return [
-            f"{c.name}: {c.score:.3f} < {c.threshold}"
-            if c.score is not None
-            else f"{c.name}: {c.details}"
-            for c in self.checks
-            if not c.passed and c.status != CheckStatus.SKIPPED
-        ]
+        out = []
+        for c in self.checks:
+            if c.passed or c.status == CheckStatus.SKIPPED:
+                continue
+            if c.score is None:
+                out.append(f"{c.name}: {c.details}")
+            elif c.name in self._COUNT_CHECKS:
+                count = int(c.score)
+                noun = "leak" if c.name == "pii_scan" else "risk"
+                out.append(
+                    f"{c.name}: {count} {noun}{'s' if count != 1 else ''} found "
+                    f"(max {int(c.threshold or 0)})"
+                )
+            else:
+                out.append(f"{c.name}: {c.score:.3f} below the {c.threshold} threshold")
+        return out
 
     @property
     def exit_code(self) -> int:
@@ -238,6 +252,30 @@ class ServeXGuard:
         from servexguard.evaluator import evaluate_quality
 
         scores = evaluate_quality(data)
+
+        # RAGAS is an optional extra. When it is absent nothing was measured, so
+        # these are skipped rather than failed: GuardResult.passed already
+        # ignores skipped checks, which stops a missing dependency from blocking
+        # a deploy nobody actually evaluated.
+        if scores is None:
+            return [
+                CheckResult(
+                    name=name,
+                    status=CheckStatus.SKIPPED,
+                    score=None,
+                    threshold=threshold,
+                    details={
+                        "reason": "RAGAS is not installed, so quality was not measured",
+                        "install": "pip install servex-guard[eval]",
+                    },
+                )
+                for name, threshold in (
+                    ("faithfulness", self.min_faithfulness),
+                    ("answer_relevancy", self.min_relevancy),
+                    ("context_recall", self.min_context_recall),
+                )
+            ]
+
         checks = []
 
         # Faithfulness

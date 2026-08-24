@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def evaluate_quality(data: list[dict]) -> dict[str, float]:
+def evaluate_quality(data: list[dict]) -> dict[str, float] | None:
     """
     Evaluate RAG quality using RAGAS metrics.
 
@@ -17,7 +17,9 @@ def evaluate_quality(data: list[dict]) -> dict[str, float]:
         data: List of dicts with keys: question, answer, contexts, ground_truth
 
     Returns:
-        Dict of metric_name → score (0.0 to 1.0)
+        Dict of metric_name → score (0.0 to 1.0), or ``None`` when RAGAS is not
+        installed. ``None`` and a dict of zeros are very different things: the
+        first means "not measured", the second means "measured, and terrible".
     """
     try:
         from datasets import Dataset
@@ -56,10 +58,9 @@ def evaluate_quality(data: list[dict]) -> dict[str, float]:
         return scores
 
     except ImportError:
-        logger.warning("RAGAS not installed. Run: pip install ragas")
-        return {
-            "faithfulness": 0.0,
-            "answer_relevancy": 0.0,
-            "context_recall": 0.0,
-            "context_precision": 0.0,
-        }
+        # Returning zeros made a missing optional dependency indistinguishable
+        # from a model that scored zero on every metric, so a correct first
+        # install printed three failed checks and "GATE FAILED". Report absence
+        # and let the caller mark those checks skipped instead.
+        logger.warning("RAGAS not installed. Run: pip install servex-guard[eval]")
+        return None

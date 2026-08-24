@@ -174,11 +174,13 @@ def check(
         and c.score is not None
     ]
     if quality_scores and all(s == 0.0 for s in quality_scores):
+        # A missing RAGAS now yields skipped checks with no score, so it cannot
+        # reach here: real zeros mean RAGAS ran and had nothing to call.
         console.print(
-            "\n[yellow]💡 Tip:[/] All quality scores are 0.0 — RAGAS may not be "
-            "installed or no LLM endpoint is configured. Run with "
-            "[bold]--min-faithfulness 0.0[/] to skip quality checks and use only "
-            "security scanning."
+            "\n[yellow]Tip:[/] Every quality score is 0.0, which means RAGAS ran "
+            "but had no LLM endpoint configured. Set your provider key, or run "
+            "with [bold]--min-faithfulness 0.0[/] to gate on the security scans "
+            "alone."
         )
 
     # Save report in requested format
@@ -235,6 +237,77 @@ def init(
         target.unlink()
     write_default_config(target)
     console.print(f"[green]✅ Wrote default config: {target}[/]")
+
+
+@app.command()
+def demo() -> None:
+    """Run the gate on a bundled example. No dataset or API key needed.
+
+    Writes a small golden dataset into the current directory and runs the gate
+    against it twice: once with two planted problems, once after they are fixed.
+    Seeing a deploy blocked and then allowed is the fastest way to understand
+    what this tool does.
+    """
+    import logging
+
+    from servexguard.core import ServeXGuard
+    from servexguard.demo import CLEAN, DEMO_FILE, FLAWED, write_dataset
+
+    # The optional-dependency warnings are already reported, once and in plain
+    # English, by the report itself. Logging them raw before each of the two
+    # runs is four extra lines of noise in the first thing anyone sees.
+    logging.getLogger("servexguard").setLevel(logging.ERROR)
+    for name in ("servexguard.evaluator", "servexguard.security"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+    console.print(
+        "\n[bold]ServeXGuard demo[/]\n"
+        "A retail-banking assistant, checked the way your CI would check it.\n"
+    )
+
+    console.rule("[bold red]1 of 2 — before the fix[/]")
+    console.print(
+        f"[dim]{len(FLAWED)} rows written to {DEMO_FILE}. One answer repeats a "
+        f"customer's bank details; one question tries a prompt injection, and it "
+        f"matches two known patterns.[/]\n"
+    )
+    write_dataset(FLAWED, DEMO_FILE)
+    guard = ServeXGuard(check_pii=True, check_injection=True, language="fr")
+    before = guard.check(DEMO_FILE)
+    reporter.render_terminal(before, console)
+    console.print(
+        f"\n[red]Exit code {before.exit_code} — this deploy is blocked.[/]"
+        if not before.passed
+        else "\n[green]Passed.[/]"
+    )
+    for f in before.failures:
+        console.print(f"  [red]•[/] {f}")
+
+    console.rule("\n[bold green]2 of 2 — after the fix[/]")
+    console.print(
+        "[dim]The assistant now refuses to repeat personal data, and the "
+        "injection row is gone. Nothing else changed.[/]\n"
+    )
+    write_dataset(CLEAN, DEMO_FILE)
+    after = guard.check(DEMO_FILE)
+    reporter.render_terminal(after, console)
+    console.print(
+        f"\n[green]Exit code {after.exit_code} — this deploy is allowed.[/]"
+        if after.passed
+        else f"\n[red]Exit code {after.exit_code}.[/]"
+    )
+
+    # Leave the flawed version behind: a file they can open and break again is
+    # worth more than a clean one they have no reason to look at.
+    write_dataset(FLAWED, DEMO_FILE)
+    console.print(
+        f"\n[bold]What just happened[/]\n"
+        f"  The gate returns a non-zero exit code, so CI stops the merge.\n"
+        f"  Quality metrics need an extra: [bold]pip install servex-guard\\[eval][/]\n\n"
+        f"[bold]Next[/]\n"
+        f"  [dim]# {DEMO_FILE} is on disk with the problems back in. Edit it and rerun:[/]\n"
+        f"  servexguard check --dataset {DEMO_FILE} --check-pii --check-injection\n"
+    )
 
 
 @app.command()
