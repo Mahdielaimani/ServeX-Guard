@@ -29,11 +29,22 @@
 </p>
 
 <p align="center">
-  <a href="https://elaimani.io">Website</a> ·
+  <a href="https://servexguard.com">Website</a> ·
   <a href="#-quick-start">Quick Start</a> ·
   <a href="#%EF%B8%8F-cicd-integration">CI/CD</a> ·
   <a href="#%EF%B8%8F-configuration">Config</a> ·
   <a href="#%EF%B8%8F-roadmap">Roadmap</a>
+</p>
+
+---
+
+<p align="center">
+  <img src="https://servexguard.com/demo.gif" width="720" alt="servexguard demo: a deploy blocked by a PII leak and a prompt injection, then allowed once both are fixed" />
+</p>
+
+<p align="center">
+  <em>Try it yourself, no dataset and no account:</em><br>
+  <code>pip install servex-guard && servexguard demo</code>
 </p>
 
 ---
@@ -95,6 +106,23 @@ If any check fails → **exit code 1** → CI/CD stops → bad code never reache
 ```bash
 pip install servex-guard
 ```
+
+### See it work first
+
+Before writing anything, run the bundled example. It needs no dataset, no
+account and no API key, and it runs the gate twice: once against a dataset
+carrying a leaked IBAN and a prompt injection, once after both are fixed.
+
+```bash
+servexguard demo
+```
+
+It leaves `servexguard-demo.jsonl` in the current directory with the problems
+back in, so you can edit it and rerun.
+
+> Quality metrics (faithfulness, relevancy, context recall) need an optional
+> extra: `pip install servex-guard[eval]`. Without it they are reported as
+> **skipped**, never as failures, and the security scans still run.
 
 ### Prepare your golden dataset
 
