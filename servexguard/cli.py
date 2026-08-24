@@ -174,11 +174,13 @@ def check(
         and c.score is not None
     ]
     if quality_scores and all(s == 0.0 for s in quality_scores):
+        # A missing RAGAS now yields skipped checks with no score, so it cannot
+        # reach here: real zeros mean RAGAS ran and had nothing to call.
         console.print(
-            "\n[yellow]💡 Tip:[/] All quality scores are 0.0 — RAGAS may not be "
-            "installed or no LLM endpoint is configured. Run with "
-            "[bold]--min-faithfulness 0.0[/] to skip quality checks and use only "
-            "security scanning."
+            "\n[yellow]Tip:[/] Every quality score is 0.0, which means RAGAS ran "
+            "but had no LLM endpoint configured. Set your provider key, or run "
+            "with [bold]--min-faithfulness 0.0[/] to gate on the security scans "
+            "alone."
         )
 
     # Save report in requested format

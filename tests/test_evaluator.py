@@ -85,17 +85,23 @@ def test_fallback_when_ragas_missing(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    scores = evaluate_quality(SAMPLE)
-    assert scores == {
-        "faithfulness": 0.0,
-        "answer_relevancy": 0.0,
-        "context_recall": 0.0,
-        "context_precision": 0.0,
-    }
+    # None, not zeros. Zeros were indistinguishable from a model that scored
+    # zero on every metric, so a correct first install printed three failed
+    # checks and blocked the deploy.
+    assert evaluate_quality(SAMPLE) is None
 
 
-def test_returns_all_metric_keys():
-    """The result always exposes the four expected metric keys."""
+def test_returns_all_metric_keys(monkeypatch):
+    """When RAGAS is present the result exposes the four metric keys."""
+    _install_fake_ragas(
+        monkeypatch,
+        {
+            "faithfulness": [0.9],
+            "answer_relevancy": [0.8],
+            "context_recall": [0.7],
+            "context_precision": [0.6],
+        },
+    )
     scores = evaluate_quality(SAMPLE)
     assert set(scores) == {
         "faithfulness",

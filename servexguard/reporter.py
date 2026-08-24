@@ -146,6 +146,8 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
         result: The guard result.
         console: Optional Rich console; a new one is created if omitted.
     """
+    from servexguard.core import CheckStatus
+
     console = console or Console()
 
     quality = [c for c in result.checks if c.name in QUALITY_METRICS]
@@ -155,12 +157,24 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
         table.add_column("Score", justify="right")
         table.add_column("Threshold", justify="right")
         table.add_column("Status", justify="center")
+        skipped = [c for c in quality if c.status == CheckStatus.SKIPPED]
         for c in quality:
-            status = "[green]✅[/]" if c.passed else "[red]❌[/]"
-            score_str = f"{c.score:.3f}" if c.score is not None else "—"
-            thresh_str = f"{c.threshold:.2f}" if c.threshold is not None else "—"
+            # A skipped check must not wear the same red cross as a failed one:
+            # one means "your system is bad", the other means "we did not look".
+            if c.status == CheckStatus.SKIPPED:
+                status, score_str = "[dim]skipped[/]", "[dim]not measured[/]"
+            else:
+                status = "[green]✅[/]" if c.passed else "[red]❌[/]"
+                score_str = f"{c.score:.3f}" if c.score is not None else "-"
+            thresh_str = f"{c.threshold:.2f}" if c.threshold is not None else "-"
             table.add_row(c.name, score_str, thresh_str, status)
         console.print(table)
+        if skipped:
+            console.print(
+                "  [yellow]Quality metrics were not measured.[/] RAGAS is an optional "
+                "extra:\n  [bold]pip install servex-guard\\[eval][/]  "
+                "[dim](security scans ran normally)[/]"
+            )
 
     security = [c for c in result.checks if c.name in SECURITY_CHECKS]
     if security:
