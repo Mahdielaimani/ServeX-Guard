@@ -190,6 +190,38 @@ else:
 
 ---
 
+## Why not just use RAGAS directly?
+
+You can, and for the detection itself you probably should. RAGAS, Presidio and a
+dozen regexes are open source, and ServeX Guard calls them rather than replacing
+them. What takes the time is everything around them.
+
+| | DIY (RAGAS + Presidio) | Hosted eval platforms | ServeX Guard |
+|---|---|---|---|
+| Time to a working gate | Days of glue code | Hours | One command |
+| Blocks a deploy by exit code | Build it yourself | Partial | Built in |
+| Same config gates CI *and* scores production | No | No | One YAML file |
+| Runs offline, nothing leaves your machine | Depends what you wire up | Mostly cloud | Default |
+| Stores your users' conversation text | Your choice | Yes, that is the product | Never |
+| PII and embeddings for FR, AR and Darija | If you configure it | English first | Built in |
+| Keeps working if the vendor disappears | Yes, it is your code | No | Yes, Apache 2.0 |
+
+If you have an engineer with two spare months and no compliance deadline, build
+it. Most teams do not, and the part nobody budgets for is not the detection but
+the memory around it: stored history, a nightly comparison, alerting, retention,
+and the evidence an auditor asks for a year later.
+
+## What this is not
+
+It does **not** block attacks at runtime. It runs beside your pipeline, not in
+front of your model. If you need a runtime firewall for LLM traffic, buy one,
+and keep this for proving that what you shipped still behaves the way you
+validated it.
+
+It is also not a replacement for your own eval set. It runs *your* golden
+dataset against *your* thresholds. A bad dataset produces a confident, useless
+green tick.
+
 ## CI/CD Integration
 
 ### GitHub Actions
