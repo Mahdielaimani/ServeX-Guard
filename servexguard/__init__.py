@@ -5,7 +5,7 @@ Evaluate quality. Detect PII leaks. Block prompt injections. Stop drift.
 By ServeX AI — El Mahdi El Aimani
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "El Mahdi El Aimani"
 __email__ = "mahdielaimani@gmail.com"
 
