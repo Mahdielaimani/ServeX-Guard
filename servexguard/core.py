@@ -5,6 +5,7 @@ Core ServeXGuard orchestrator — coordinates evaluation, security, and drift ch
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -170,6 +171,7 @@ class ServeXGuard:
         save_baseline: bool = False,
         llm: LLMSettings | None = None,
         allow_unmeasured: bool = False,
+        pii_presets: list[str] | None = None,
     ):
         self.min_faithfulness = min_faithfulness
         self.min_relevancy = min_relevancy
@@ -184,6 +186,7 @@ class ServeXGuard:
         self.save_baseline = save_baseline
         self.llm = llm
         self.allow_unmeasured = allow_unmeasured
+        self.pii_presets = pii_presets or []
 
     def check(self, dataset_path: str) -> GuardResult:
         """
@@ -280,10 +283,7 @@ class ServeXGuard:
 
         data: list[dict] = []
         with open(dataset_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
+            for number, row in enumerate(self._read_rows(f, dataset_path.suffix), start=1):
                 if len(data) >= MAX_ROWS:
                     import logging
 
@@ -291,12 +291,28 @@ class ServeXGuard:
                         "Dataset exceeds %d rows; ignoring the rest", MAX_ROWS
                     )
                     break
-                data.append(self._truncate_fields(json.loads(line)))
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"Row {number} of {path} must be an object, got {type(row).__name__}"
+                    )
+                data.append(self._truncate_fields(row))
 
         if not data:
             raise ValueError(f"Dataset is empty: {path}")
 
         return data
+
+    @staticmethod
+    def _read_rows(f: Any, suffix: str) -> Iterable[Any]:
+        """Yield rows from a JSON array file, or from JSON Lines."""
+        if suffix.lower() == ".json":
+            content = json.load(f)
+            yield from content if isinstance(content, list) else [content]
+            return
+        for line in f:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
 
     @staticmethod
     def _truncate_fields(row: dict) -> dict:
@@ -352,17 +368,24 @@ class ServeXGuard:
 
     def _run_pii_scan(self, data: list[dict]) -> CheckResult:
         """Scan for PII leaks in answers."""
-        from servexguard.security import scan_pii
+        from servexguard.security import pii_detector, scan_pii
 
         leaks = scan_pii(
-            data, language=self.language, custom_entities=self.custom_entities
+            data,
+            language=self.language,
+            custom_entities=self.custom_entities,
+            presets=self.pii_presets,
         )
         return CheckResult(
             name="pii_scan",
             status=CheckStatus.PASSED if len(leaks) == 0 else CheckStatus.FAILED,
             score=float(len(leaks)),
             threshold=0.0,
-            details={"leaks": leaks[:10]},  # First 10 leaks
+            details={  # First 10 leaks
+                "leaks": leaks[:10],
+                "detector": pii_detector(self.language),
+                "presets": self.pii_presets,
+            },
         )
 
     def _run_injection_scan(self, data: list[dict]) -> CheckResult:

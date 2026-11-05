@@ -71,6 +71,7 @@ class SecurityConfig(BaseModel):
     language: str = "en"
     check_injection: bool = False
     custom_entities: list[CustomEntity] = Field(default_factory=list)
+    pii_presets: list[str] = Field(default_factory=list)
 
 
 class DriftConfig(BaseModel):
@@ -183,6 +184,7 @@ def merge_cli_overrides(
         "min_relevancy": ("quality", "min_relevancy"),
         "min_context_recall": ("quality", "min_context_recall"),
         "check_pii": ("security", "check_pii"),
+        "pii_preset": ("security", "pii_presets"),
         "language": ("security", "language"),
         "check_injection": ("security", "check_injection"),
         "check_drift": ("drift", "enabled"),
@@ -266,6 +268,9 @@ security:
     - CREDIT_CARD
     - PERSON
   check_injection: true
+  # Built-in locale identifiers. "ma" adds Moroccan RIB (with its check key), CIN,
+  # phone numbers, ICE and CNSS.
+  # pii_presets: [ma]
   # Optional locale-specific PII via your own regex (global-first core).
   # custom_entities:
   #   - pattern: "\\\\b[A-Z]{1,2}\\\\d{6}\\\\b"

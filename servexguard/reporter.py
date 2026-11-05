@@ -199,6 +199,16 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
             label = f"{count} {noun}{'s' if count != 1 else ''}"
             table.add_row(c.name.replace("_", " ").title(), label, status)
         console.print(table)
+        detector = next(
+            (c.details["detector"] for c in security if c.details.get("detector")), None
+        )
+        if detector and detector != "presidio":
+            console.print(f"  [yellow]PII detector:[/] {detector}", highlight=False)
+        if any(c.name == "injection_scan" for c in security):
+            console.print(
+                "  [dim]Injection scan matches known phrasings. Zero risks does not "
+                "prove a system is safe.[/]"
+            )
 
     drift = [c for c in result.checks if c.name == "query_drift"]
     if drift:

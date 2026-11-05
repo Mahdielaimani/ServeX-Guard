@@ -20,6 +20,7 @@ from servexguard import reporter
 from servexguard.config import load_config, merge_cli_overrides, write_default_config
 from servexguard.core import CheckStatus, ServeXGuard
 from servexguard.evaluator import LLMSettings
+from servexguard.presets import validate as validate_presets
 from servexguard.uploader import DEFAULT_CLOUD_URL
 
 # Make emoji-rich output safe on legacy Windows consoles (cp1252) so the CLI
@@ -59,6 +60,9 @@ def check(
     ),
     check_pii: bool | None = typer.Option(
         None, "--check-pii/--no-check-pii", help="Enable PII leak detection"
+    ),
+    pii_preset: list[str] | None = typer.Option(
+        None, "--pii-preset", help="Locale PII preset, repeatable. Available: ma"
     ),
     check_injection: bool | None = typer.Option(
         None, "--check-injection/--no-check-injection", help="Enable prompt injection scanning"
@@ -136,6 +140,7 @@ def check(
             "min_relevancy": min_relevancy,
             "min_context_recall": min_context_recall,
             "check_pii": check_pii,
+            "pii_preset": pii_preset or None,
             "check_injection": check_injection,
             "check_drift": check_drift,
             "drift_threshold": drift_threshold,
@@ -148,6 +153,12 @@ def check(
             "llm_embedding_model": llm_embedding_model,
         },
     )
+
+    try:
+        validate_presets(cfg.security.pii_presets)
+    except ValueError as exc:
+        console.print(f"\n[red]❌ {exc}[/]")
+        raise typer.Exit(code=1)
 
     dataset_path = cfg.dataset.path
     if not dataset_path:
@@ -175,6 +186,7 @@ def check(
         save_baseline=save_baseline,
         llm=LLMSettings(**cfg.llm.model_dump()),
         allow_unmeasured=allow_unmeasured,
+        pii_presets=cfg.security.pii_presets,
     )
 
     console.print("\n[dim]Running checks...[/]\n")
@@ -284,8 +296,8 @@ def demo() -> None:
     console.rule("[bold red]1 of 2 — before the fix[/]")
     console.print(
         f"[dim]{len(FLAWED)} rows written to {DEMO_FILE}. One answer repeats a "
-        f"customer's bank details; one question tries a prompt injection, and it "
-        f"matches two known patterns.[/]\n"
+        f"customer's bank details; one question tries a prompt injection that "
+        f"matches known patterns.[/]\n"
     )
     write_dataset(FLAWED, DEMO_FILE)
     # Quality needs an LLM and this demo promises no setup, so it is switched
@@ -297,6 +309,7 @@ def demo() -> None:
         check_pii=True,
         check_injection=True,
         language="fr",
+        pii_presets=["ma"],
     )
     before = guard.check(DEMO_FILE)
     reporter.render_terminal(before, console)
@@ -331,8 +344,8 @@ def demo() -> None:
         f"  Quality metrics need [bold]pip install servex-guard\\[eval][/] and an LLM.\n\n"
         f"[bold]Next[/]\n"
         f"  [dim]# {DEMO_FILE} is on disk with the problems back in. Edit it and rerun:[/]\n"
-        f"  servexguard check --dataset {DEMO_FILE} --check-pii --check-injection "
-        f"--allow-unmeasured\n"
+        f"  servexguard check --dataset {DEMO_FILE} --check-pii --pii-preset ma "
+        f"--check-injection --allow-unmeasured\n"
     )
 
 
