@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "servex-guard"
-version = "0.2.1"
+version = "0.3.0"
 description = "Production quality gate for RAG systems — evaluate, protect, monitor."
 readme = "README.md"
 license = "Apache-2.0"
@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Quality Assurance",
 ]

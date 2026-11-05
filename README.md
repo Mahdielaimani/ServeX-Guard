@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Production quality gate for RAG & LLM systems.</strong><br>
-  Evaluate quality · Detect PII leaks · Block prompt injections · Stop drift.<br>
+  Measure quality · Flag PII leaks · Flag prompt injection · Track query drift.<br>
   <em>One command. In your CI/CD. Before it reaches production.</em>
 </p>
 
@@ -66,36 +66,41 @@ Then in production:
 ServeX Guard is a single CLI command that checks your RAG system **before** deployment:
 
 ```bash
-pip install servex-guard
+pip install "servex-guard[all]"
 
 servexguard check \
   --dataset golden_dataset.jsonl \
-  --min-faithfulness 0.80 \
-  --check-pii \
-  --check-injection
+  --llm-model mistral-small3.2 \
+  --llm-base-url http://localhost:11434/v1 \
+  --llm-embedding-model bge-m3 \
+  --check-pii --pii-preset ma \
+  --check-injection --llm-injection
 ```
 
 ```
-🛡️ ServeX Guard Quality Gate
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 📊 Quality Metrics
-   Faithfulness      0.87  ✅  (min: 0.80)
-   Answer Relevancy  0.82  ✅  (min: 0.75)
-   Context Recall    0.79  ✅  (min: 0.70)
+   faithfulness      0.870  ✅  (min 0.80)
+   answer_relevancy  0.820  ✅  (min 0.75)
+   context_recall    0.790  ✅  (min 0.70)
 
 🔒 Security Scan
-   PII detected      0 leaks  ✅
-   Injection risks   0 found  ✅
+   Pii Scan          0 leaks  ✅
+   Injection Scan    0 risks  ✅
+   Injection Judge   0 risks  ✅
 
-📈 Drift Detection
-   Query drift score 0.12  ✅  (max: 0.25)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ QUALITY GATE PASSED — Safe to deploy
+✅ QUALITY GATE PASSED
 ```
 
-If any check fails → **exit code 1** → CI/CD stops → bad code never reaches production.
+*Illustrative output. For a real run, see [examples/sample-report.md](examples/sample-report.md).*
+
+| Exit code | Meaning | CI |
+|---|---|---|
+| `0` | Everything requested was measured and passed | continues |
+| `1` | A check failed | stops |
+| `3` | A requested check **could not be measured** | stops |
+
+A broken install or an unreachable model is never reported as a pass. To accept a
+gap on purpose, set that metric's threshold to `0` or pass `--allow-unmeasured`.
 
 ---
 
@@ -120,9 +125,27 @@ servexguard demo
 It leaves `servexguard-demo.jsonl` in the current directory with the problems
 back in, so you can edit it and rerun.
 
-> Quality metrics (faithfulness, relevancy, context recall) need an optional
-> extra: `pip install servex-guard[eval]`. Without it they are reported as
-> **skipped**, never as failures, and the security scans still run.
+> The demo covers the security scans only. Quality metrics (faithfulness,
+> relevancy, context recall) need `pip install servex-guard[eval]` and a model to
+> judge with. Without them, `check` reports **not measured** and exits `3`.
+
+### Choose who judges quality
+
+Faithfulness and the other metrics are computed by an LLM you name, on any
+OpenAI-compatible endpoint. **Nothing is sent anywhere until you name one**, even
+if `OPENAI_API_KEY` is set.
+
+```yaml
+# servexguard.yaml
+llm:
+  model: mistral-small3.2
+  base_url: http://localhost:11434/v1   # Ollama, vLLM, Azure OpenAI... local if you like
+  embedding_model: bge-m3               # needed for answer_relevancy
+  api_key_env: OPENAI_API_KEY           # the variable's name, never the key
+```
+
+Models are examples: pick and validate your own. A weak judge produces confident,
+wrong scores.
 
 ### Prepare your golden dataset
 
@@ -136,23 +159,25 @@ A JSONL file with reference Q&A pairs your RAG system should answer correctly:
 ### Run
 
 ```bash
-# Basic quality check
-servexguard check --dataset golden_dataset.jsonl
+# Security scans only, nothing leaves the machine
+servexguard check --dataset golden_dataset.jsonl \
+  --min-faithfulness 0 --min-relevancy 0 --min-context-recall 0 \
+  --check-pii --pii-preset ma --check-injection
 
-# Full check — quality + security + output report
-servexguard check \
-  --dataset golden_dataset.jsonl \
-  --min-faithfulness 0.80 \
-  --min-relevancy 0.75 \
-  --check-pii \
-  --check-injection \
+# Everything, judged by a local model, with a report
+servexguard check --dataset golden_dataset.jsonl \
+  --llm-model mistral-small3.2 --llm-base-url http://localhost:11434/v1 \
+  --llm-embedding-model bge-m3 \
+  --check-pii --pii-preset ma --check-injection --llm-injection \
   --output report.json
 ```
 
 ### Send results to ServeX Guard Cloud (optional)
 
 `--upload` posts the computed report to your Cloud dashboard. Everything is still
-computed locally — the Cloud only receives the finished JSON.
+computed locally. The Cloud receives scores, counts and finding types, with
+anything quoted from your dataset removed. The hosted dashboard is available on
+request.
 
 ```bash
 export SERVEXGUARD_API_KEY=sxg_...          # from dashboard.servexguard.com → Settings
@@ -172,20 +197,26 @@ from your quality gate.
 
 ```python
 from servexguard import ServeXGuard
+from servexguard.evaluator import LLMSettings
 
 guard = ServeXGuard(
     min_faithfulness=0.80,
     min_relevancy=0.75,
     check_pii=True,
+    pii_presets=["ma"],
     check_injection=True,
+    llm=LLMSettings(
+        model="mistral-small3.2",
+        base_url="http://localhost:11434/v1",
+        embedding_model="bge-m3",
+    ),
 )
 
 result = guard.check("golden_dataset.jsonl")
 
-if result.passed:
-    print("✅ Safe to deploy")
-else:
-    print(f"❌ Blocked: {result.failures}")
+print(result.verdict)      # passed | failed | not_measured
+print(result.failures)     # what failed
+print([c.name for c in result.not_measured])  # what could not be measured
 ```
 
 ---
@@ -200,10 +231,9 @@ them. What takes the time is everything around them.
 |---|---|---|---|
 | Time to a working gate | Days of glue code | Hours | One command |
 | Blocks a deploy by exit code | Build it yourself | Partial | Built in |
-| Same config gates CI *and* scores production | No | No | One YAML file |
-| Runs offline, nothing leaves your machine | Depends what you wire up | Mostly cloud | Default |
-| Stores your users' conversation text | Your choice | Yes, that is the product | Never |
-| PII and embeddings for FR, AR and Darija | If you configure it | English first | Built in |
+| Nothing leaves your machine until you name a model | Depends what you wire up | Mostly cloud | Default |
+| Stores your users' conversation text | Your choice | Yes, that is the product | No. Uploads carry scores and counts, no quoted text |
+| Injection checks for FR, AR and Darija, Moroccan PII preset | If you build it | English first | Built in, [limits measured](#measured-limits) |
 | Keeps working if the vendor disappears | Yes, it is your code | No | Yes, Apache 2.0 |
 
 If you have an engineer with two spare months and no compliance deadline, build
@@ -221,6 +251,48 @@ validated it.
 It is also not a replacement for your own eval set. It runs *your* golden
 dataset against *your* thresholds. A bad dataset produces a confident, useless
 green tick.
+
+## Measured limits
+
+Numbers from tests in this repository, on Windows, with one local model
+(`qwen3-vl:8b-instruct`). The cases were written by the author: **treat them as an
+indication, not a benchmark**, and measure on your own data.
+
+**Prompt injection.** 80 cases in five language variants, written after the rules
+and the judge prompt were frozen ([cases](tests/data/injection_judge_heldout.jsonl)):
+
+| | Attacks caught | Benign questions flagged |
+|---|---|---|
+| Rules (`--check-injection`) | 0 / 40 | 0 / 40 |
+| LLM judge (`--llm-injection`) | 32 / 40 | 0 / 40 |
+
+| Judge, by language | Attacks caught |
+|---|---|
+| French | 8 / 8 |
+| Arabic | 8 / 8 |
+| Darija, Arabic script | 7 / 8 |
+| English | 6 / 8 |
+| Darija, Latin script | 3 / 8 |
+
+- Rules catch phrasings someone wrote down, and nothing else. They are a cheap first
+  filter.
+- **The judge can be fooled.** A poisoned document telling it to "reply OK" got
+  through in our own end-to-end test. It reads the text it judges, so it can be
+  attacked like any other model.
+- Zero risks does not prove a system is safe.
+
+**Query drift.** Character n-grams, so it sees wording, not meaning: a paraphrase in
+different words looks like drift. On 200 random splits of 24 public banking questions
+in five language variants (12 against 12), the default threshold of 0.20 gave 5.4%
+false alarms and 8.7% missed topic changes. Tune it on your own traffic.
+
+**PII.** Without a spaCy model, PII detection is regex and cannot see person names;
+the report says which detector ran. Arabic has no spaCy model, so Arabic text stays on
+regex. The `ma` preset matches formats, so an unusual format is missed.
+
+**Quality metrics** come from RAGAS with English prompts, judged by the model you
+choose. Scores on French, Arabic or Darija depend on that model. Validate them on
+answers you have graded yourself before trusting a threshold.
 
 ## CI/CD Integration
 
@@ -240,7 +312,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - run: pip install servex-guard
+      - run: pip install "servex-guard[all]"
 
       - name: ServeX Guard Quality Gate
         run: |
@@ -250,7 +322,8 @@ jobs:
             --check-pii \
             --check-injection
         env:
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          # Read the model and endpoint from servexguard.yaml, and the key from here.
+          OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
 ```
 
 ### Azure DevOps
@@ -261,7 +334,7 @@ jobs:
   inputs:
     targetType: inline
     script: |
-      pip install servex-guard
+      pip install "servex-guard[all]"
       servexguard check \
         --dataset $(Build.SourcesDirectory)/data/golden_dataset.jsonl \
         --min-faithfulness 0.80 \
@@ -272,30 +345,30 @@ jobs:
 
 ## What ServeX Guard Checks
 
-### Quality metrics (via RAGAS)
+### Quality metrics (via RAGAS, judged by your LLM)
 
 | Metric | What it measures | Default |
 |---|---|---|
 | **Faithfulness** | Answer grounded in retrieved context? | ≥ 0.80 |
-| **Answer Relevancy** | Answer addresses the question? | ≥ 0.75 |
-| **Context Recall** | Retrieval found the right documents? | ≥ 0.70 |
-| **Context Precision** | Retrieved docs actually relevant? | ≥ 0.70 |
+| **Answer Relevancy** | Answer addresses the question? (needs an embedding model) | ≥ 0.75 |
+| **Context Recall** | Retrieval found the right documents? (needs `ground_truth`) | ≥ 0.70 |
 
 ### Security scanning
 
-| Check | What it catches |
-|---|---|
-| **PII Detection** | IBANs, national IDs, emails, phone numbers in LLM output |
-| **Prompt Injection** | Jailbreaks, system prompt leaks, instruction overrides |
-| **Data Leakage** | Internal references, file paths, API keys in responses |
+| Check | What it looks for | Needs |
+|---|---|---|
+| **PII Detection** | Emails, phones, IBANs, cards, IPs in answers. Person names with a spaCy model | Nothing. `[pii]` and a spaCy model for names |
+| **Moroccan preset** (`--pii-preset ma`) | RIB with check key, CIN, phones, ICE, CNSS, also in Arabic-Indic digits | Nothing |
+| **Injection rules** | Known phrasings in EN, FR, AR, Darija, in questions, answers and retrieved contexts | Nothing |
+| **Injection judge** (`--llm-injection`) | Reworded attacks in questions and retrieved contexts | An LLM |
+
+Your own patterns go in `security.custom_entities`.
 
 ### Drift detection
 
 | Check | What it catches |
 |---|---|
-| **Query Drift** | Users asking outside the calibration zone |
-| **Quality Drift** | Faithfulness degrading over time |
-| **Document Drift** | Source documents changed but index not updated |
+| **Query Drift** | Questions moving away from a saved baseline, by wording. Create it with `--save-baseline` on a known-good dataset |
 
 ---
 
@@ -309,19 +382,22 @@ quality:
   min_relevancy: 0.75
   min_context_recall: 0.70
 
+llm:
+  model: mistral-small3.2
+  base_url: http://localhost:11434/v1
+  embedding_model: bge-m3
+
 security:
   check_pii: true
-  pii_entities:
-    - IBAN
-    - NATIONAL_ID
-    - EMAIL
-    - PHONE_NUMBER
+  pii_presets: [ma]
+  language: fr
   check_injection: true
+  llm_injection: true
 
 drift:
   enabled: true
-  max_query_drift: 0.25
-  baseline_file: "data/baseline_embeddings.npy"
+  max_query_drift: 0.20
+  baseline_file: "data/baseline.npy"
 
 dataset:
   path: "data/golden_dataset.jsonl"
@@ -347,13 +423,14 @@ Your RAG system
 ┌──────────────────────────────┐
 │      ServeX Guard CLI        │
 │                              │
-│  Evaluator   → RAGAS         │  Quality scores
-│  Security    → Presidio      │  PII + injection
-│  Drift       → cosine sim    │  Distribution shift
+│  Evaluator   → RAGAS + LLM   │  Quality scores
+│  Security    → regex, Presidio,│  PII + injection
+│                optional LLM  │
+│  Drift       → n-gram cosine │  Wording shift
 │  Reporter    → JSON/MD/CLI   │  Report + exit code
 └──────────────────────────────┘
         ↓
-  exit(0) ✅  or  exit(1) ❌
+  exit 0 ✅   exit 1 ❌   exit 3 ⛔ not measured
         ↓
   CI/CD continues or stops
 ```
@@ -371,16 +448,18 @@ Your RAG system
 
 ## Roadmap
 
-- [x] Quality evaluation (RAGAS)
-- [x] PII detection (Presidio + regex fallback)
-- [x] Prompt injection scanning (12 patterns)
-- [x] CLI with exit codes for CI/CD
+- [x] Quality evaluation (RAGAS), on an LLM you name
+- [x] PII detection (regex, Presidio with an installed spaCy model)
+- [x] Moroccan PII preset
+- [x] Prompt injection rules in EN, FR, AR, Darija
+- [x] Optional LLM injection judge
+- [x] Query drift against a saved baseline
+- [x] CLI with exit codes for CI/CD, failing closed when nothing was measured
 - [x] YAML configuration
-- [ ] Drift detection (query + quality + document)
+- [ ] Better Darija detection, in Latin script above all
+- [ ] Semantic drift on real embeddings
+- [ ] Quality drift and document drift
 - [ ] GitHub Action (marketplace)
-- [ ] Dashboard (ServeX Guard Cloud)
-- [ ] Slack / Teams alerts
-- [ ] Arabic, French & Darija PII support
 - [ ] Compliance PDF reports (ACAPS / BAM / RGPD)
 
 ---
@@ -395,7 +474,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 git clone https://github.com/Mahdielaimani/ServeX-Guard.git
 cd ServeX-Guard
 pip install -e ".[dev]"
-pytest
+pytest                # the real RAGAS and Presidio tests skip unless [all] is installed
 ```
 
 ---

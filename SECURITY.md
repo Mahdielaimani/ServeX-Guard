@@ -27,21 +27,27 @@ ServeX Guard follows a **local-first, zero-trust** security model:
 Your machine / CI runner
 │
 ├── Dataset (.jsonl)     → read locally, never uploaded
-├── PII scan (Presidio)  → runs offline, no internet needed
-├── Injection scan       → pure regex, no network calls
-├── Drift detection      → numpy cosine sim, fully local
+├── PII scan             → regex, or Presidio with an installed spaCy model.
+│                          Never downloads a model at runtime
+├── Injection rules      → pure regex, no network calls
+├── Drift detection      → hashed n-grams, fully local
 │
-└── RAGAS quality eval   → calls YOUR OWN LLM endpoint only
-                           (your Azure OpenAI / OpenAI account)
-                           ServeX Guard never sees your API key
+├── RAGAS quality eval   → calls only the LLM endpoint you name
+└── Injection judge      → optional, calls only the LLM endpoint you name
+                           Nothing is sent until you name a model, even if
+                           OPENAI_API_KEY is set. The key is read from the
+                           environment and never written to a report.
 ```
 
 **ServeX Guard never:**
 - Sends your dataset to any external server
-- Stores your data anywhere
-- Logs PII content (only counts)
+- Stores your data anywhere except the report file you ask for
+- Logs PII content
 - Requires an account or authentication to run
-- Phones home or sends telemetry
+- Phones home or sends telemetry (RAGAS's own telemetry is switched off)
+
+**A local report file quotes what it found**, including the leaked value, so treat
+it as sensitive. `--upload` strips anything quoted from your dataset before sending.
 
 ---
 
@@ -53,8 +59,8 @@ Your machine / CI runner
 |---|---|
 | LLM hallucination | RAGAS faithfulness score < threshold → blocks deployment |
 | PII leak in outputs | Presidio NER + regex patterns → flags before deployment |
-| Prompt injection | 18 attack patterns detected in questions and answers |
-| Query drift | Cosine similarity vs baseline → detects distribution shift |
+| Prompt injection | Known phrasings in questions, answers and contexts, plus an optional LLM judge. See [measured limits](README.md#measured-limits) |
+| Query drift | N-gram similarity vs a saved baseline → detects a shift in wording |
 | Silent quality regression | Quality gate fails CI/CD before users are impacted |
 
 ### In ServeX Guard itself (its own hardening)
@@ -83,19 +89,14 @@ Drift baseline.npy      → written to your local path only
 JSON/Markdown reports   → written to your local path only
 ```
 
-### What goes to your LLM endpoint (RAGAS only)
+### What goes to your LLM endpoint
 
-When quality evaluation is enabled, ServeX Guard calls your configured
-LLM endpoint via RAGAS. This sends:
+Only when you name a model. RAGAS sends the questions, answers, contexts and ground
+truths of the metrics you enabled. The injection judge sends the questions and
+contexts, not the answers.
 
-```
-- The questions from your golden dataset
-- The answers from your golden dataset  
-- The contexts from your golden dataset
-```
-
-This goes to **your own endpoint** — Azure OpenAI, OpenAI, or any
-RAGAS-compatible LLM you configure. It does not go to ServeX AI servers.
+This goes to **the endpoint you configure**, which can be a local server. It does
+not go to ServeX AI servers.
 
 **To run with zero network calls** (air-gapped environments):
 
@@ -109,7 +110,9 @@ servexguard check \
   --check-injection
 ```
 
-This skips quality evaluation entirely and runs only offline checks.
+This skips quality evaluation entirely and runs only offline checks. It is also
+the behaviour with no model named, except that the gate then exits `3` unless
+those thresholds are `0`.
 
 ---
 
@@ -138,9 +141,10 @@ Paths like `../../etc/passwd` or `C:\Windows\System32\config` are rejected.
 
 ### ReDoS protection
 
-All regex injection patterns truncate input to 10,000 characters
-before scanning. This prevents catastrophic backtracking on
-adversarially crafted inputs.
+Each regex run sees at most 10,000 characters, which bounds backtracking on
+adversarially crafted inputs. Injection scans walk long fields in overlapping
+windows up to 200,000 characters, so padding cannot hide a payload below that. PII
+scans read the first 10,000 characters of an answer.
 
 ### Baseline file protection
 
@@ -167,6 +171,7 @@ is justified:
 |---|---|---|
 | `ragas` | Quality evaluation metrics | Yes — `--min-faithfulness 0.0` |
 | `presidio-analyzer` | NER-based PII detection | Yes — regex fallback activates |
+| `langchain-*`, `datasets` | Required by RAGAS, versions capped | With `ragas` |
 | `numpy` | Drift detection math | No — core dependency |
 | `pydantic` | Config validation | No — core dependency |
 | `typer` | CLI framework | No — core dependency |
@@ -248,15 +253,17 @@ accidentally committed secrets:
 
 These are security limitations we are aware of and plan to address:
 
-### v0.1.0 known limitations
+### v0.3.0 known limitations
 
 | Limitation | Risk level | Planned fix |
 |---|---|---|
-| RAGAS quality eval requires LLM API call | Low — goes to your own endpoint | v0.2.0: local eval option |
-| Drift uses bag-of-words, not real embeddings | Low — less accurate drift scores | v0.2.0: real embedding support |
-| No SBOM (Software Bill of Materials) generated | Low | v0.2.0: CycloneDX SBOM |
-| No code signing on PyPI releases | Medium | v1.0.0: Sigstore signing |
-| Injection patterns are regex-based | Medium — can be evaded by advanced attacks | v0.3.0: LLM-based detection |
+| Injection rules miss reworded attacks (0 of 40 in testing) | High if used alone | Use `--llm-injection` |
+| The LLM judge can be fooled by the text it reads | Medium | Better defences, to be measured |
+| Judge weak on Darija in Latin script (3 of 8 in testing) | Medium | Larger Darija test set |
+| RAGAS 0.4.3 pins LangChain below 1.0 and uses APIs it has deprecated | Low | Follow RAGAS's migration |
+| Drift sees wording, not meaning | Low | Real embeddings |
+| No SBOM (Software Bill of Materials) generated | Low | CycloneDX SBOM |
+| No code signing on PyPI releases | Medium | Sigstore signing |
 
 ### What ServeX Guard does NOT protect against
 

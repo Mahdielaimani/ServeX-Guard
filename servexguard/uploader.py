@@ -93,6 +93,20 @@ def _clip(value: str | None, limit: int) -> str | None:
     return value[:limit] if value else value
 
 
+# What a finding quotes from the dataset. A PII finding's snippet *is* the leaked
+# number. Types, rows and counts are enough for a dashboard.
+_TEXT_KEYS = {"text_snippet", "question", "pattern"}
+
+
+def _without_text(value: Any) -> Any:
+    """Copy a report with everything quoted from the dataset removed."""
+    if isinstance(value, dict):
+        return {k: _without_text(v) for k, v in value.items() if k not in _TEXT_KEYS}
+    if isinstance(value, list):
+        return [_without_text(item) for item in value]
+    return value
+
+
 def build_payload(
     result: GuardResult,
     project: str = "default",
@@ -121,7 +135,7 @@ def build_payload(
         "passed": result.passed,
         "git_sha": _clip(git_sha(), MAX_SHA_CHARS),
         "git_ref": _clip(git_ref(), MAX_REF_CHARS),
-        "raw_report": reporter.build_report_dict(result, dataset_path),
+        "raw_report": _without_text(reporter.build_report_dict(result, dataset_path)),
     }
 
     for check in result.checks:

@@ -116,3 +116,31 @@ def test_judge_findings_count_as_injection_risks():
         ]
     )
     assert uploader.build_payload(result)["injection_risks"] == 2
+
+
+def test_the_cloud_never_receives_detected_text():
+    """A PII finding's snippet is the leaked number itself."""
+    result = GuardResult(
+        checks=[
+            CheckResult(
+                "pii_scan",
+                CheckStatus.FAILED,
+                1.0,
+                0.0,
+                {
+                    "leaks": [
+                        {
+                            "row": 0,
+                            "entity_type": "MA_CIN",
+                            "text_snippet": "CIN BK123456",
+                            "question": "Quelle est ma CIN ?",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    raw = json.dumps(uploader.build_payload(result))
+    assert "BK123456" not in raw
+    assert "Quelle est" not in raw
+    assert "MA_CIN" in raw
