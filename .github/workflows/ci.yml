@@ -83,10 +83,16 @@ jobs:
           pip install "$(ls dist/*.whl | sort -V | tail -1)[all]"
           pip install pytest pytest-asyncio
 
-      - name: Install the spaCy models the tests use
+      - name: Install the spaCy model the tests use
+        # Bash on every OS, so a failure fails the step. Downloads come from GitHub
+        # releases, which return the odd 504.
+        shell: bash
         run: |
-          python -m spacy download fr_core_news_sm
-          python -m spacy download en_core_web_sm
+          for attempt in 1 2 3 4 5; do
+            python -m spacy download fr_core_news_sm && exit 0
+            sleep $((attempt * 15))
+          done
+          exit 1
 
       - name: Test against the real RAGAS and Presidio
         # From a directory without the source tree, so the installed wheel is what runs.
