@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from servexguard.core import GuardResult
 
 QUALITY_METRICS = {"faithfulness", "answer_relevancy", "context_recall", "context_precision"}
-SECURITY_CHECKS = {"pii_scan", "injection_scan"}
+SECURITY_CHECKS = {"pii_scan", "injection_scan", "injection_judge"}
 
 
 def _now_iso() -> str:
@@ -108,7 +108,7 @@ def to_markdown(
     if security:
         lines += ["## 🔒 Security Scan", "", "| Check | Issues | Status |", "|---|---|---|"]
         for c in security:
-            count = int(c.score) if c.score is not None else 0
+            count = int(c.score) if c.score is not None else "—"
             lines.append(f"| {c.name.replace('_', ' ').title()} | {count} | {_status_icon(c)} |")
         lines.append("")
 
@@ -193,10 +193,14 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
         table.add_column("Issues Found", justify="right")
         table.add_column("Status", justify="center")
         for c in security:
-            status = "[green]✅[/]" if c.passed else "[red]❌[/]"
-            count = int(c.score) if c.score is not None else 0
-            noun = "leak" if c.name == "pii_scan" else "risk"
-            label = f"{count} {noun}{'s' if count != 1 else ''}"
+            if c.score is None:
+                # "0 risks" here would read as a clean scan that never happened.
+                status, label = "[yellow]⛔[/]", "[yellow]not measured[/]"
+            else:
+                status = "[green]✅[/]" if c.passed else "[red]❌[/]"
+                count = int(c.score)
+                noun = "leak" if c.name == "pii_scan" else "risk"
+                label = f"{count} {noun}{'s' if count != 1 else ''}"
             table.add_row(c.name.replace("_", " ").title(), label, status)
         console.print(table)
         detector = next(
@@ -204,11 +208,24 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
         )
         if detector and detector != "presidio":
             console.print(f"  [yellow]PII detector:[/] {detector}", highlight=False)
-        if any(c.name == "injection_scan" for c in security):
+        if any(c.name.startswith("injection") for c in security):
             console.print(
-                "  [dim]Injection scan matches known phrasings. Zero risks does not "
-                "prove a system is safe.[/]"
+                "  [dim]Injection checks miss attacks they have not seen. Zero risks "
+                "does not prove a system is safe.[/]"
             )
+        for c in security:
+            if c.name != "injection_judge":
+                continue
+            if c.details.get("unjudged"):
+                console.print(
+                    f"  [yellow]Injection judge:[/] {c.details['unjudged']} texts got no "
+                    "clear verdict and were not cleared."
+                )
+            if c.details.get("truncated_fields"):
+                console.print(
+                    f"  [yellow]Injection judge:[/] {c.details['truncated_fields']} long "
+                    "fields were judged only in part."
+                )
 
     drift = [c for c in result.checks if c.name == "query_drift"]
     if drift:

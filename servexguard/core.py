@@ -98,7 +98,7 @@ class GuardResult:
     # Quality metrics fail by falling below a floor; security checks fail by
     # counting above a ceiling. Printing both as "score < threshold" made every
     # security failure read backwards, e.g. "injection_scan: 1.000 < 0.0".
-    _COUNT_CHECKS = {"pii_scan", "injection_scan"}
+    _COUNT_CHECKS = {"pii_scan", "injection_scan", "injection_judge"}
 
     @property
     def failures(self) -> list[str]:
@@ -172,6 +172,7 @@ class ServeXGuard:
         llm: LLMSettings | None = None,
         allow_unmeasured: bool = False,
         pii_presets: list[str] | None = None,
+        llm_injection: bool = False,
     ):
         self.min_faithfulness = min_faithfulness
         self.min_relevancy = min_relevancy
@@ -187,6 +188,7 @@ class ServeXGuard:
         self.llm = llm
         self.allow_unmeasured = allow_unmeasured
         self.pii_presets = pii_presets or []
+        self.llm_injection = llm_injection
 
     def check(self, dataset_path: str) -> GuardResult:
         """
@@ -215,6 +217,9 @@ class ServeXGuard:
         if self.check_injection:
             injection_check = self._run_injection_scan(data)
             result.checks.append(injection_check)
+
+        if self.llm_injection:
+            result.checks.append(self._run_injection_judge(data))
 
         # 3. Drift detection
         if self.check_drift:
@@ -399,6 +404,52 @@ class ServeXGuard:
             score=float(len(vulnerabilities)),
             threshold=0.0,
             details={"vulnerabilities": vulnerabilities[:10]},
+        )
+
+    def _run_injection_judge(self, data: list[dict]) -> CheckResult:
+        """Ask the configured LLM whether questions and contexts are attacks."""
+        from servexguard.evaluator import QualityNotMeasuredError
+        from servexguard.injection_judge import MIN_COVERAGE, judge_dataset
+
+        try:
+            outcome = judge_dataset(data, self.llm)
+        except QualityNotMeasuredError as exc:
+            return CheckResult(
+                name="injection_judge",
+                status=CheckStatus.NOT_MEASURED,
+                threshold=0.0,
+                details={"reason": exc.reason, "fix": exc.fix},
+            )
+
+        details: dict[str, Any] = {
+            "findings": outcome.findings[:10],
+            "judged": outcome.judged,
+            "unjudged": outcome.unjudged,
+            "truncated_fields": outcome.truncated,
+            "coverage": round(outcome.coverage, 3),
+        }
+        # A found attack stands however little was judged. A clean result needs coverage.
+        if outcome.findings:
+            status = CheckStatus.FAILED
+        elif outcome.coverage < MIN_COVERAGE:
+            details["reason"] = (
+                f"only {outcome.judged} of {outcome.judged + outcome.unjudged} texts "
+                "got a clear verdict; check the LLM endpoint and model"
+            )
+            return CheckResult(
+                name="injection_judge",
+                status=CheckStatus.NOT_MEASURED,
+                threshold=0.0,
+                details=details,
+            )
+        else:
+            status = CheckStatus.PASSED
+        return CheckResult(
+            name="injection_judge",
+            status=status,
+            score=float(len(outcome.findings)),
+            threshold=0.0,
+            details=details,
         )
 
     def _run_drift_detection(self, data: list[dict]) -> CheckResult:

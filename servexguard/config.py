@@ -70,6 +70,7 @@ class SecurityConfig(BaseModel):
     pii_entities: list[str] = Field(default_factory=lambda: list(DEFAULT_PII_ENTITIES))
     language: str = "en"
     check_injection: bool = False
+    llm_injection: bool = False
     custom_entities: list[CustomEntity] = Field(default_factory=list)
     pii_presets: list[str] = Field(default_factory=list)
 
@@ -187,6 +188,7 @@ def merge_cli_overrides(
         "pii_preset": ("security", "pii_presets"),
         "language": ("security", "language"),
         "check_injection": ("security", "check_injection"),
+        "llm_injection": ("security", "llm_injection"),
         "check_drift": ("drift", "enabled"),
         "drift_threshold": ("drift", "max_query_drift"),
         "baseline": ("drift", "baseline_file"),
@@ -268,6 +270,9 @@ security:
     - CREDIT_CARD
     - PERSON
   check_injection: true
+  # Also ask the llm above whether questions and retrieved contexts are attacks.
+  # Catches reworded attacks that rules cannot, one call per distinct text.
+  # llm_injection: true
   # Built-in locale identifiers. "ma" adds Moroccan RIB (with its check key), CIN,
   # phone numbers, ICE and CNSS.
   # pii_presets: [ma]

@@ -105,3 +105,14 @@ def test_default_cloud_url_env_override(monkeypatch):
     assert uploader.default_cloud_url() == uploader.DEFAULT_CLOUD_URL
     monkeypatch.setenv("SERVEXGUARD_CLOUD_URL", "http://localhost:8000/v1/runs")
     assert uploader.default_cloud_url() == "http://localhost:8000/v1/runs"
+
+
+def test_judge_findings_count_as_injection_risks():
+    """A run blocked by the judge must not show zero risks on the dashboard."""
+    result = GuardResult(
+        checks=[
+            CheckResult("injection_scan", CheckStatus.PASSED, 0.0, 0.0),
+            CheckResult("injection_judge", CheckStatus.FAILED, 2.0, 0.0),
+        ]
+    )
+    assert uploader.build_payload(result)["injection_risks"] == 2

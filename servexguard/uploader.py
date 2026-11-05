@@ -46,6 +46,7 @@ _QUALITY_FIELDS = {
 _COUNT_FIELDS = {
     "pii_scan": "pii_leaks",
     "injection_scan": "injection_risks",
+    "injection_judge": "injection_risks",
 }
 
 
@@ -129,7 +130,8 @@ def build_payload(
         if check.name in _QUALITY_FIELDS:
             payload[_QUALITY_FIELDS[check.name]] = float(check.score)
         elif check.name in _COUNT_FIELDS:
-            payload[_COUNT_FIELDS[check.name]] = int(check.score)
+            field_name = _COUNT_FIELDS[check.name]
+            payload[field_name] = payload.get(field_name, 0) + int(check.score)
         elif check.name == "query_drift":
             payload["drift_score"] = float(check.score)
 

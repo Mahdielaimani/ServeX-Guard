@@ -67,6 +67,9 @@ def check(
     check_injection: bool | None = typer.Option(
         None, "--check-injection/--no-check-injection", help="Enable prompt injection scanning"
     ),
+    llm_injection: bool | None = typer.Option(
+        None, "--llm-injection/--no-llm-injection", help="Also judge injection with the LLM"
+    ),
     check_drift: bool | None = typer.Option(
         None, "--check-drift/--no-check-drift", help="Enable query drift detection"
     ),
@@ -142,6 +145,7 @@ def check(
             "check_pii": check_pii,
             "pii_preset": pii_preset or None,
             "check_injection": check_injection,
+            "llm_injection": llm_injection,
             "check_drift": check_drift,
             "drift_threshold": drift_threshold,
             "language": language,
@@ -178,6 +182,7 @@ def check(
         min_context_recall=cfg.quality.min_context_recall,
         check_pii=cfg.security.check_pii,
         check_injection=cfg.security.check_injection,
+        llm_injection=cfg.security.llm_injection,
         check_drift=cfg.drift.enabled,
         drift_threshold=cfg.drift.max_query_drift,
         baseline_path=cfg.drift.baseline_file,
