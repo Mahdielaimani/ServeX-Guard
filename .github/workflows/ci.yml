@@ -10,8 +10,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -45,3 +46,73 @@ jobs:
             --min-faithfulness 0.0 \
             --min-relevancy 0.0 \
             --min-context-recall 0.0
+
+  # The job above replaces RAGAS with a fake, so it stayed green while 0.2.1 could
+  # not even import it. This one installs what a user installs, from a built
+  # wheel, and runs the real stacks.
+  extras:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        experimental: [false]
+        include:
+          - os: windows-latest
+            python-version: "3.12"
+            experimental: false
+          - os: ubuntu-latest
+            python-version: "3.14"
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build the wheel and install it with every extra
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          pip install "$(ls dist/*.whl | sort -V | tail -1)[all]"
+          pip install pytest pytest-asyncio
+
+      - name: Install the spaCy model the tests use
+        # Bash on every OS, so a failure fails the step. Downloads come from GitHub
+        # releases, which return the odd 504.
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            python -m spacy download fr_core_news_sm && exit 0
+            sleep $((attempt * 15))
+          done
+          exit 1
+
+      - name: Test against the real RAGAS and Presidio
+        # From a directory without the source tree, so the installed wheel is what runs.
+        shell: bash
+        run: |
+          mkdir -p ../real-stack && cp -r tests ../real-stack/tests && cd ../real-stack
+          set -o pipefail
+          pytest tests/test_ragas_integration.py tests/test_presidio_integration.py \
+            -v -p no:cacheprovider -rs | tee summary.txt
+          # Skipping here would hide exactly the failure this job exists to catch.
+          if grep -E "SKIPPED.*(could not import|not installed)" summary.txt; then
+            echo "A real-stack test was skipped."; exit 1
+          fi
+
+      - name: The installed gate refuses to pass with nothing measured
+        shell: bash
+        run: |
+          printf '{"question":"q","answer":"a","contexts":["c"],"ground_truth":"g"}\n' > d.jsonl
+          set +e
+          servexguard check --dataset d.jsonl
+          code=$?
+          set -e
+          test "$code" = "3"

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "servex-guard"
-version = "0.2.1"
+version = "0.3.0"
 description = "Production quality gate for RAG systems — evaluate, protect, monitor."
 readme = "README.md"
 license = "Apache-2.0"
@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Quality Assurance",
 ]
@@ -44,24 +45,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# RAGAS quality evaluation (faithfulness, relevancy, context recall)
+# RAGAS quality evaluation (faithfulness, relevancy, context recall).
+# LangChain is capped on purpose: RAGAS 0.4.3 imports modules that
+# langchain-community 0.4 removed, so an uncapped install fails at import.
 eval = [
-    "ragas==0.1.0",
-    "datasets==2.14.0",
+    "ragas==0.4.3",
+    "datasets>=2.19,<6",
+    "langchain>=0.3,<1",
+    "langchain-core>=0.3,<1",
+    "langchain-community>=0.3,<0.4",
+    "langchain-openai>=0.3,<0.4",
 ]
-# Microsoft Presidio PII detection + tiktoken token counting
+# Microsoft Presidio PII detection. spaCy language models are installed
+# separately and never downloaded at runtime: see security._build_analyzer.
 pii = [
-    "presidio-analyzer==2.2.33",
-    "presidio-anonymizer==2.2.33",
-    "tiktoken==0.5.0",
+    # 2.2.366 dropped Python 3.10, so the floor stays below it.
+    "presidio-analyzer>=2.2.363,<2.3",
+    "presidio-anonymizer>=2.2.363,<2.3",
 ]
 # Everything: full quality + security stack
 all = [
-    "ragas==0.1.0",
-    "datasets==2.14.0",
-    "presidio-analyzer==2.2.33",
-    "presidio-anonymizer==2.2.33",
-    "tiktoken==0.5.0",
+    "servex-guard[eval,pii]",
 ]
 dev = [
     "pytest==8.3.4",

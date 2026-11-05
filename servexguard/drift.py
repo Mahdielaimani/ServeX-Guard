@@ -1,10 +1,21 @@
 """
-Drift detection module — detect query distribution shifts.
+Query drift detection: has what users ask moved away from a saved baseline?
+
+Questions become hashed character n-gram vectors. That needs no model and no
+network, and works the same on French, Arabic and Darija in either script, where
+word lists fall apart on spelling variation. The vectors hold hashes, not text,
+so a baseline file can be kept in a repository.
+
+It sees wording, not meaning: a paraphrase using entirely different words looks
+like drift, and a new topic worded like the old one does not. Treat it as a cheap
+early signal in CI, not as a measure of semantic distance.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +23,22 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 ALLOWED_BASELINE_EXT = {".npy"}
+
+# Part of the baseline format: a baseline built at another width cannot be compared.
+VECTOR_DIM = 2048
+NGRAM_SIZES = (3, 4, 5)
+# Below this many questions the score moves with a single unusual row.
+MIN_RELIABLE_QUESTIONS = 20
+_BATCH_ROWS = 512
+
+
+class DriftNotMeasuredError(Exception):
+    """Drift could not be computed. Says nothing about the system under test."""
+
+    def __init__(self, reason: str, fix: str | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.fix = fix
 
 
 def _validate_baseline_path(path: str) -> Path:
@@ -39,117 +66,135 @@ def detect_drift(
     data: list[dict],
     baseline_path: str | None = None,
     save_baseline: bool = False,
-) -> float:
-    """
-    Detect query distribution drift using embedding cosine similarity.
-
-    Compares current query embeddings against a saved baseline.
-    High drift score (>0.25) = users asking questions the system wasn't designed for.
+) -> float | None:
+    """Score how far the questions in ``data`` have moved from the baseline.
 
     Args:
-        data: List of dicts with 'question' field.
-        baseline_path: Path to .npy file with baseline embeddings.
+        data: Rows with a ``question`` field.
+        baseline_path: Path to the ``.npy`` baseline.
+        save_baseline: Replace the baseline with these questions, without comparing.
 
     Returns:
-        Drift score (0.0 = no drift, 1.0 = complete drift).
+        0.0 (matches the baseline) to 1.0 (nothing in common), or ``None`` when a
+        new baseline was saved and so nothing was compared.
+
+    Raises:
+        DriftNotMeasuredError: There is nothing to compare, so no score exists.
     """
     questions = [row.get("question", "") for row in data if row.get("question")]
-
     if not questions:
-        logger.warning("No questions found in dataset for drift detection")
-        return 0.0
+        raise DriftNotMeasuredError("the dataset has no questions to compare")
+    if not baseline_path:
+        raise DriftNotMeasuredError(
+            "no baseline file is configured", "Set drift.baseline_file or pass --baseline"
+        )
 
-    # Validate the baseline path up front (anti path-traversal, extension).
-    resolved_baseline = _validate_baseline_path(baseline_path) if baseline_path else None
+    # Validate up front (anti path-traversal, extension).
+    resolved = _validate_baseline_path(baseline_path)
+    current = embed(questions)
 
-    # Generate simple embeddings (bag-of-words for now, upgrade to real embeddings later)
-    current_embeddings = _simple_embed_batch(questions)
+    if save_baseline:
+        _save_baseline(resolved, current)
+        return None
 
-    if resolved_baseline and resolved_baseline.exists():
-        # allow_pickle=False blocks arbitrary-object deserialization attacks.
-        baseline_embeddings = np.load(resolved_baseline, allow_pickle=False)
-        drift_score = _compute_drift(baseline_embeddings, current_embeddings)
+    if not resolved.exists():
+        raise DriftNotMeasuredError(
+            f"no baseline exists at {baseline_path}",
+            "Run once on a known-good dataset with --save-baseline",
+        )
+
+    # allow_pickle=False blocks arbitrary-object deserialization attacks.
+    baseline = np.load(resolved, allow_pickle=False)
+    if baseline.ndim != 2 or baseline.shape[1] != VECTOR_DIM:
+        raise DriftNotMeasuredError(
+            f"{baseline_path} was built by an older version and cannot be compared",
+            "Rebuild it on a known-good dataset with --save-baseline",
+        )
+    if len(questions) < MIN_RELIABLE_QUESTIONS or len(baseline) < MIN_RELIABLE_QUESTIONS:
+        logger.warning(
+            "Drift compares %d questions to a baseline of %d. Under %d either way, "
+            "one unusual question can move the score.",
+            len(questions), len(baseline), MIN_RELIABLE_QUESTIONS,
+        )
+
+    score = compute_drift(baseline, current)
+    logger.info("Drift score: %.4f", score)
+    return score
+
+
+def _save_baseline(baseline_path: Path, vectors: np.ndarray) -> None:
+    """Persist vectors as the drift baseline, creating parent dirs."""
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(baseline_path, vectors)
+    logger.info("Baseline saved to %s", baseline_path)
+
+
+def _normalize(text: str) -> str:
+    """Fold case and presentation forms, and drop Arabic marks and elongation."""
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(
+        ch for ch in text if unicodedata.category(ch) != "Mn" and ch != "ـ"
+    )
+
+
+def _ngrams(text: str) -> list[str]:
+    """Character n-grams inside each word, with its boundaries marked."""
+    grams: list[str] = []
+    for word in _normalize(text).split():
+        marked = f"<{word}>"
+        for size in NGRAM_SIZES:
+            grams.extend(marked[i : i + size] for i in range(len(marked) - size + 1))
+    return grams
+
+
+def embed(texts: list[str]) -> np.ndarray:
+    """Hash each text to a unit vector. Stable across runs, batches and machines."""
+    matrix = np.zeros((len(texts), VECTOR_DIM), dtype=np.float32)
+    for row, text in enumerate(texts):
+        for gram in _ngrams(text):
+            digest = hashlib.blake2b(gram.encode("utf-8"), digest_size=8).digest()
+            value = int.from_bytes(digest, "big")
+            # The sign bit stops hash collisions from all pushing the same way.
+            matrix[row, value % VECTOR_DIM] += 1.0 if value >> 63 else -1.0
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return matrix / norms
+
+
+def _nearest_similarity(
+    queries: np.ndarray, reference: np.ndarray, skip_self: bool = False
+) -> np.ndarray:
+    """For each query, its cosine similarity to the closest reference vector."""
+    best = np.empty(len(queries), dtype=np.float32)
+    for start in range(0, len(queries), _BATCH_ROWS):
+        batch = queries[start : start + _BATCH_ROWS]
+        sims = batch @ reference.T
+        if skip_self:
+            sims[np.arange(len(batch)), np.arange(start, start + len(batch))] = -np.inf
+        best[start : start + _BATCH_ROWS] = sims.max(axis=1)
+    return best
+
+
+def compute_drift(baseline: np.ndarray, current: np.ndarray) -> float:
+    """Compare how close current questions get to the baseline with what is normal.
+
+    Raw similarity has no meaning alone: two different questions on one topic
+    still score well below 1. The yardstick is the baseline itself, namely how
+    close each of its questions gets to the nearest other one. Current questions
+    that fit as well as that score about 0.
+
+    Args:
+        baseline: Baseline vectors.
+        current: Current vectors.
+
+    Returns:
+        Drift score clamped to [0, 1].
+    """
+    if len(baseline) > 1:
+        normal = float(_nearest_similarity(baseline, baseline, skip_self=True).mean())
     else:
-        # No baseline → save current as baseline, report 0 drift
-        if resolved_baseline:
-            _save_baseline(resolved_baseline, current_embeddings)
-        drift_score = 0.0
-
-    # Explicit refresh of the baseline (e.g. --save-baseline after a clean run).
-    if save_baseline and resolved_baseline:
-        _save_baseline(resolved_baseline, current_embeddings)
-
-    logger.info(f"Drift score: {drift_score:.4f}")
-    return drift_score
-
-
-def _save_baseline(baseline_path: str, embeddings: np.ndarray) -> None:
-    """Persist embeddings as the drift baseline, creating parent dirs."""
-    Path(baseline_path).parent.mkdir(parents=True, exist_ok=True)
-    np.save(baseline_path, embeddings)
-    logger.info(f"Baseline saved to {baseline_path}")
-
-
-def _simple_embed_batch(texts: list[str], vocab_size: int = 256) -> np.ndarray:
-    """
-    Simple bag-of-words embedding for drift detection.
-    Replace with real embeddings (Azure OpenAI / BGE) in production.
-    """
-    # Build vocabulary from all texts
-    all_words = set()
-    for text in texts:
-        all_words.update(text.lower().split())
-    vocab = sorted(all_words)[:vocab_size]
-
-    # Encode each text
-    embeddings = []
-    for text in texts:
-        words = text.lower().split()
-        vec = np.array([words.count(w) for w in vocab], dtype=np.float32)
-        norm = np.linalg.norm(vec)
-        if norm > 0:
-            vec /= norm
-        embeddings.append(vec)
-
-    return np.array(embeddings)
-
-
-def _compute_drift(
-    baseline: np.ndarray,
-    current: np.ndarray,
-) -> float:
-    """
-    Compute drift as 1 - mean cosine similarity between
-    current queries and their nearest baseline neighbors.
-    """
-    if baseline.shape[1] != current.shape[1]:
-        # Vocabulary mismatch — high drift signal
-        return 0.8
-
-    # For each current query, find max similarity to any baseline query
-    similarities = []
-    for curr_vec in current:
-        if np.linalg.norm(curr_vec) == 0:
-            similarities.append(0.0)
-            continue
-
-        sims = []
-        for base_vec in baseline[:100]:  # Cap for performance
-            if np.linalg.norm(base_vec) == 0:
-                continue
-            sim = float(
-                np.dot(curr_vec, base_vec)
-                / (np.linalg.norm(curr_vec) * np.linalg.norm(base_vec) + 1e-8)
-            )
-            sims.append(sim)
-
-        if sims:
-            similarities.append(max(sims))  # Best match
-        else:
-            similarities.append(0.0)
-
-    # Drift = 1 - mean(best similarities)
-    mean_sim = float(np.mean(similarities)) if similarities else 0.0
-    drift_score = round(1.0 - mean_sim, 4)
-
-    return max(0.0, min(1.0, drift_score))  # Clamp to [0, 1]
+        normal = 1.0
+    observed = float(_nearest_similarity(current, baseline).mean())
+    if normal <= 0:
+        return 0.0 if observed >= normal else 1.0
+    return round(float(np.clip((normal - observed) / normal, 0.0, 1.0)), 4)

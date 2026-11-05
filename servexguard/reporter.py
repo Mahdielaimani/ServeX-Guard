@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from servexguard.core import GuardResult
 
 QUALITY_METRICS = {"faithfulness", "answer_relevancy", "context_recall", "context_precision"}
-SECURITY_CHECKS = {"pii_scan", "injection_scan"}
+SECURITY_CHECKS = {"pii_scan", "injection_scan", "injection_judge"}
 
 
 def _now_iso() -> str:
@@ -75,7 +75,11 @@ def to_markdown(
     Returns:
         Markdown string.
     """
-    badge = "✅ **PASSED**" if result.passed else "🚫 **FAILED**"
+    badge = {
+        "passed": "✅ **PASSED**",
+        "failed": "🚫 **FAILED**",
+        "not_measured": "⛔ **NOT MEASURED**",
+    }[result.verdict]
     lines: list[str] = [
         "# 🛡️ ServeXGuard Quality Gate",
         "",
@@ -104,7 +108,7 @@ def to_markdown(
     if security:
         lines += ["## 🔒 Security Scan", "", "| Check | Issues | Status |", "|---|---|---|"]
         for c in security:
-            count = int(c.score) if c.score is not None else 0
+            count = int(c.score) if c.score is not None else "—"
             lines.append(f"| {c.name.replace('_', ' ').title()} | {count} | {_status_icon(c)} |")
         lines.append("")
 
@@ -119,9 +123,14 @@ def to_markdown(
             "",
         ]
 
-    if not result.passed:
+    if result.failures:
         lines += ["## ❌ Failures", ""]
         lines += [f"- {f}" for f in result.failures]
+        lines.append("")
+
+    if result.not_measured:
+        lines += ["## ⛔ Not measured", ""]
+        lines += [f"- {c.name}: {c.details.get('reason')}" for c in result.not_measured]
         lines.append("")
 
     text = "\n".join(lines)
@@ -136,6 +145,8 @@ def _status_icon(check) -> str:
 
     if check.status == CheckStatus.SKIPPED:
         return "⏭️"
+    if check.status == CheckStatus.NOT_MEASURED:
+        return "⛔"
     return "✅" if check.passed else "❌"
 
 
@@ -157,24 +168,22 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
         table.add_column("Score", justify="right")
         table.add_column("Threshold", justify="right")
         table.add_column("Status", justify="center")
-        skipped = [c for c in quality if c.status == CheckStatus.SKIPPED]
         for c in quality:
-            # A skipped check must not wear the same red cross as a failed one:
-            # one means "your system is bad", the other means "we did not look".
+            # Neither of these may wear the red cross of a failed check: that one
+            # means "your system is bad", these mean "we did not look".
             if c.status == CheckStatus.SKIPPED:
-                status, score_str = "[dim]skipped[/]", "[dim]not measured[/]"
+                status, score_str = "[dim]off[/]", "[dim]-[/]"
+            elif c.status == CheckStatus.NOT_MEASURED:
+                status, score_str = "[yellow]⛔[/]", "[yellow]not measured[/]"
             else:
                 status = "[green]✅[/]" if c.passed else "[red]❌[/]"
                 score_str = f"{c.score:.3f}" if c.score is not None else "-"
             thresh_str = f"{c.threshold:.2f}" if c.threshold is not None else "-"
             table.add_row(c.name, score_str, thresh_str, status)
         console.print(table)
-        if skipped:
-            console.print(
-                "  [yellow]Quality metrics were not measured.[/] RAGAS is an optional "
-                "extra:\n  [bold]pip install servex-guard\\[eval][/]  "
-                "[dim](security scans ran normally)[/]"
-            )
+        fixes = {c.details["fix"] for c in quality if c.details.get("fix")}
+        for fix in sorted(fixes):
+            console.print(f"  [yellow]To measure quality:[/] {fix}", markup=False)
 
     security = [c for c in result.checks if c.name in SECURITY_CHECKS]
     if security:
@@ -184,17 +193,49 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
         table.add_column("Issues Found", justify="right")
         table.add_column("Status", justify="center")
         for c in security:
-            status = "[green]✅[/]" if c.passed else "[red]❌[/]"
-            count = int(c.score) if c.score is not None else 0
-            noun = "leak" if c.name == "pii_scan" else "risk"
-            label = f"{count} {noun}{'s' if count != 1 else ''}"
+            if c.score is None:
+                # "0 risks" here would read as a clean scan that never happened.
+                status, label = "[yellow]⛔[/]", "[yellow]not measured[/]"
+            else:
+                status = "[green]✅[/]" if c.passed else "[red]❌[/]"
+                count = int(c.score)
+                noun = "leak" if c.name == "pii_scan" else "risk"
+                label = f"{count} {noun}{'s' if count != 1 else ''}"
             table.add_row(c.name.replace("_", " ").title(), label, status)
         console.print(table)
+        detector = next(
+            (c.details["detector"] for c in security if c.details.get("detector")), None
+        )
+        if detector and detector != "presidio":
+            console.print(f"  [yellow]PII detector:[/] {detector}", highlight=False)
+        if any(c.name.startswith("injection") for c in security):
+            console.print(
+                "  [dim]Injection checks miss attacks they have not seen. Zero risks "
+                "does not prove a system is safe.[/]"
+            )
+        for c in security:
+            if c.name != "injection_judge":
+                continue
+            if c.details.get("unjudged"):
+                console.print(
+                    f"  [yellow]Injection judge:[/] {c.details['unjudged']} texts got no "
+                    "clear verdict and were not cleared."
+                )
+            if c.details.get("truncated_fields"):
+                console.print(
+                    f"  [yellow]Injection judge:[/] {c.details['truncated_fields']} long "
+                    "fields were judged only in part."
+                )
 
     drift = [c for c in result.checks if c.name == "query_drift"]
     if drift:
         console.print()
         c = drift[0]
+        if c.score is None:
+            console.print(f"  📈 Drift: [yellow]{c.details.get('reason')}[/]")
+            if c.details.get("fix"):
+                console.print(f"     {c.details['fix']}", markup=False)
+            return
         status = "[green]✅[/]" if c.passed else "[red]❌[/]"
         console.print(f"  📈 Drift Score: {c.score:.3f}  (max: {c.threshold})  {status}")
         if not c.passed:

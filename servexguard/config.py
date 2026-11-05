@@ -37,6 +37,21 @@ class QualityConfig(BaseModel):
     min_context_recall: float = 0.70
 
 
+class LLMConfig(BaseModel):
+    """The OpenAI-compatible endpoint that judges quality.
+
+    Empty by default, so nothing leaves the machine until someone names a model.
+    The key is read from the environment and never stored in this file.
+    """
+
+    model: str | None = None
+    base_url: str | None = None
+    embedding_model: str | None = None
+    api_key_env: str = "OPENAI_API_KEY"
+    timeout: int = 180
+    max_workers: int = 4
+
+
 class CustomEntity(BaseModel):
     """A user-defined PII entity (regex pattern + label).
 
@@ -55,14 +70,16 @@ class SecurityConfig(BaseModel):
     pii_entities: list[str] = Field(default_factory=lambda: list(DEFAULT_PII_ENTITIES))
     language: str = "en"
     check_injection: bool = False
+    llm_injection: bool = False
     custom_entities: list[CustomEntity] = Field(default_factory=list)
+    pii_presets: list[str] = Field(default_factory=list)
 
 
 class DriftConfig(BaseModel):
     """Query distribution drift settings."""
 
     enabled: bool = False
-    max_query_drift: float = 0.25
+    max_query_drift: float = 0.20
     baseline_file: str | None = None
 
 
@@ -83,6 +100,7 @@ class ServeXGuardConfig(BaseModel):
     """Top-level ServeXGuard configuration."""
 
     quality: QualityConfig = Field(default_factory=QualityConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     drift: DriftConfig = Field(default_factory=DriftConfig)
     dataset: DatasetConfig = Field(default_factory=DatasetConfig)
@@ -167,13 +185,18 @@ def merge_cli_overrides(
         "min_relevancy": ("quality", "min_relevancy"),
         "min_context_recall": ("quality", "min_context_recall"),
         "check_pii": ("security", "check_pii"),
+        "pii_preset": ("security", "pii_presets"),
         "language": ("security", "language"),
         "check_injection": ("security", "check_injection"),
+        "llm_injection": ("security", "llm_injection"),
         "check_drift": ("drift", "enabled"),
         "drift_threshold": ("drift", "max_query_drift"),
         "baseline": ("drift", "baseline_file"),
         "dataset": ("dataset", "path"),
         "output": ("output", "path"),
+        "llm_model": ("llm", "model"),
+        "llm_base_url": ("llm", "base_url"),
+        "llm_embedding_model": ("llm", "embedding_model"),
     }
 
     for flag, value in overrides.items():
@@ -225,6 +248,17 @@ quality:
   # min_faithfulness: 0.65
   # min_relevancy: 0.60
   # min_context_recall: 0.55
+  #
+  # A threshold of 0 switches that metric off.
+
+# The model that judges quality, on any OpenAI-compatible endpoint. Empty means
+# no data leaves this machine, and quality metrics report "not measured": the
+# gate then exits 3, unless their thresholds are 0 or you pass --allow-unmeasured.
+llm:
+  model: null            # e.g. mistral-small3.2
+  base_url: null         # e.g. http://localhost:11434/v1 for Ollama
+  embedding_model: null  # e.g. bge-m3 (needed for answer_relevancy)
+  api_key_env: OPENAI_API_KEY  # name of the variable, never the key itself
 
 security:
   check_pii: true
@@ -236,6 +270,12 @@ security:
     - CREDIT_CARD
     - PERSON
   check_injection: true
+  # Also ask the llm above whether questions and retrieved contexts are attacks.
+  # Catches reworded attacks that rules cannot, one call per distinct text.
+  # llm_injection: true
+  # Built-in locale identifiers. "ma" adds Moroccan RIB (with its check key), CIN,
+  # phone numbers, ICE and CNSS.
+  # pii_presets: [ma]
   # Optional locale-specific PII via your own regex (global-first core).
   # custom_entities:
   #   - pattern: "\\\\b[A-Z]{1,2}\\\\d{6}\\\\b"
@@ -245,7 +285,7 @@ security:
 
 drift:
   enabled: false
-  max_query_drift: 0.25
+  max_query_drift: 0.20
   baseline_file: "data/baseline_embeddings.npy"
 
 dataset:

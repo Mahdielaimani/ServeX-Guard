@@ -105,3 +105,42 @@ def test_default_cloud_url_env_override(monkeypatch):
     assert uploader.default_cloud_url() == uploader.DEFAULT_CLOUD_URL
     monkeypatch.setenv("SERVEXGUARD_CLOUD_URL", "http://localhost:8000/v1/runs")
     assert uploader.default_cloud_url() == "http://localhost:8000/v1/runs"
+
+
+def test_judge_findings_count_as_injection_risks():
+    """A run blocked by the judge must not show zero risks on the dashboard."""
+    result = GuardResult(
+        checks=[
+            CheckResult("injection_scan", CheckStatus.PASSED, 0.0, 0.0),
+            CheckResult("injection_judge", CheckStatus.FAILED, 2.0, 0.0),
+        ]
+    )
+    assert uploader.build_payload(result)["injection_risks"] == 2
+
+
+def test_the_cloud_never_receives_detected_text():
+    """A PII finding's snippet is the leaked number itself."""
+    result = GuardResult(
+        checks=[
+            CheckResult(
+                "pii_scan",
+                CheckStatus.FAILED,
+                1.0,
+                0.0,
+                {
+                    "leaks": [
+                        {
+                            "row": 0,
+                            "entity_type": "MA_CIN",
+                            "text_snippet": "CIN BK123456",
+                            "question": "Quelle est ma CIN ?",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    raw = json.dumps(uploader.build_payload(result))
+    assert "BK123456" not in raw
+    assert "Quelle est" not in raw
+    assert "MA_CIN" in raw

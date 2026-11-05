@@ -18,7 +18,9 @@ from rich.panel import Panel
 
 from servexguard import reporter
 from servexguard.config import load_config, merge_cli_overrides, write_default_config
-from servexguard.core import ServeXGuard
+from servexguard.core import CheckStatus, ServeXGuard
+from servexguard.evaluator import LLMSettings
+from servexguard.presets import validate as validate_presets
 from servexguard.uploader import DEFAULT_CLOUD_URL
 
 # Make emoji-rich output safe on legacy Windows consoles (cp1252) so the CLI
@@ -59,14 +61,20 @@ def check(
     check_pii: bool | None = typer.Option(
         None, "--check-pii/--no-check-pii", help="Enable PII leak detection"
     ),
+    pii_preset: list[str] | None = typer.Option(
+        None, "--pii-preset", help="Locale PII preset, repeatable. Available: ma"
+    ),
     check_injection: bool | None = typer.Option(
         None, "--check-injection/--no-check-injection", help="Enable prompt injection scanning"
+    ),
+    llm_injection: bool | None = typer.Option(
+        None, "--llm-injection/--no-llm-injection", help="Also judge injection with the LLM"
     ),
     check_drift: bool | None = typer.Option(
         None, "--check-drift/--no-check-drift", help="Enable query drift detection"
     ),
     drift_threshold: float | None = typer.Option(
-        None, "--drift-threshold", help="Maximum drift score [default: 0.25]"
+        None, "--drift-threshold", help="Maximum drift score [default: 0.20]"
     ),
     language: str | None = typer.Option(
         None, "--language", help="PII language: en | fr | ar [default: en]"
@@ -83,6 +91,18 @@ def check(
     fmt: str | None = typer.Option(
         None, "--format", "-f", help="Report format: terminal | json | markdown"
     ),
+    llm_model: str | None = typer.Option(
+        None, "--llm-model", help="Model that judges quality. Unset: nothing is sent anywhere"
+    ),
+    llm_base_url: str | None = typer.Option(
+        None, "--llm-base-url", help="OpenAI-compatible endpoint, e.g. http://localhost:11434/v1"
+    ),
+    llm_embedding_model: str | None = typer.Option(
+        None, "--llm-embedding-model", help="Embedding model, needed for answer_relevancy"
+    ),
+    allow_unmeasured: bool = typer.Option(
+        False, "--allow-unmeasured", help="Do not block on checks that could not be measured"
+    ),
     upload: bool = typer.Option(
         False, "--upload", help="Upload the report to ServeX Guard Cloud "
         "(requires SERVEXGUARD_API_KEY)"
@@ -98,7 +118,8 @@ def check(
     🛡️ Run ServeXGuard quality gate on your RAG golden dataset.
 
     Checks quality (RAGAS), security (PII + injection), and drift.
-    Returns exit code 1 if any check fails — blocks CI/CD deployment.
+    Exit codes: 0 passed, 1 a check failed, 3 a requested check could not be
+    measured. Both 1 and 3 block CI/CD deployment.
 
     Configuration is loaded from servexguard.yaml (auto-discovered or --config);
     CLI flags override YAML values.
@@ -122,15 +143,26 @@ def check(
             "min_relevancy": min_relevancy,
             "min_context_recall": min_context_recall,
             "check_pii": check_pii,
+            "pii_preset": pii_preset or None,
             "check_injection": check_injection,
+            "llm_injection": llm_injection,
             "check_drift": check_drift,
             "drift_threshold": drift_threshold,
             "language": language,
             "baseline": baseline,
             "dataset": dataset,
             "output": output,
+            "llm_model": llm_model,
+            "llm_base_url": llm_base_url,
+            "llm_embedding_model": llm_embedding_model,
         },
     )
+
+    try:
+        validate_presets(cfg.security.pii_presets)
+    except ValueError as exc:
+        console.print(f"\n[red]❌ {exc}[/]")
+        raise typer.Exit(code=1)
 
     dataset_path = cfg.dataset.path
     if not dataset_path:
@@ -150,12 +182,17 @@ def check(
         min_context_recall=cfg.quality.min_context_recall,
         check_pii=cfg.security.check_pii,
         check_injection=cfg.security.check_injection,
-        check_drift=cfg.drift.enabled,
+        llm_injection=cfg.security.llm_injection,
+        # Asking to save a baseline is asking for the drift step to run.
+        check_drift=cfg.drift.enabled or save_baseline,
         drift_threshold=cfg.drift.max_query_drift,
         baseline_path=cfg.drift.baseline_file,
         language=cfg.security.language,
         custom_entities=[e.model_dump() for e in cfg.security.custom_entities],
         save_baseline=save_baseline,
+        llm=LLMSettings(**cfg.llm.model_dump()),
+        allow_unmeasured=allow_unmeasured,
+        pii_presets=cfg.security.pii_presets,
     )
 
     console.print("\n[dim]Running checks...[/]\n")
@@ -166,22 +203,6 @@ def check(
         raise typer.Exit(code=1)
 
     reporter.render_terminal(result, console)
-
-    # Calibration tip when quality scoring produced no signal.
-    quality_scores = [
-        c.score for c in result.checks
-        if c.name in {"faithfulness", "answer_relevancy", "context_recall"}
-        and c.score is not None
-    ]
-    if quality_scores and all(s == 0.0 for s in quality_scores):
-        # A missing RAGAS now yields skipped checks with no score, so it cannot
-        # reach here: real zeros mean RAGAS ran and had nothing to call.
-        console.print(
-            "\n[yellow]Tip:[/] Every quality score is 0.0, which means RAGAS ran "
-            "but had no LLM endpoint configured. Set your provider key, or run "
-            "with [bold]--min-faithfulness 0.0[/] to gate on the security scans "
-            "alone."
-        )
 
     # Save report in requested format
     report_format = (fmt or cfg.output.format or "terminal").lower()
@@ -212,11 +233,28 @@ def check(
             )
 
     console.print()
-    if result.passed:
-        console.print("[bold green]✅ QUALITY GATE PASSED — Safe to deploy[/]\n")
-    else:
+    if result.verdict == "failed":
         console.print("[bold red]🚫 QUALITY GATE FAILED — Deployment blocked[/]")
         console.print(f"[red]   Failures: {', '.join(result.failures)}[/]\n")
+    elif result.verdict == "not_measured":
+        console.print("[bold yellow]⛔ NOT MEASURED — Deployment blocked[/]")
+        for c in result.not_measured:
+            console.print(f"[yellow]   {c.name}: {c.details.get('reason')}[/]")
+        if any(c.name != "gate" for c in result.not_measured):
+            console.print(
+                "[dim]   Fix it, or pass --allow-unmeasured to accept the gap. A quality "
+                "metric can also be switched off with a threshold of 0.[/]"
+            )
+        console.print()
+    else:
+        unmeasured = [c.name for c in result.checks if c.status == CheckStatus.SKIPPED]
+        console.print("[bold green]✅ QUALITY GATE PASSED[/]")
+        if result.baseline_saved:
+            console.print(f"[green]   Drift baseline saved to {cfg.drift.baseline_file}[/]")
+        if unmeasured:
+            console.print(f"[yellow]   Not checked: {', '.join(unmeasured)}[/]\n")
+        else:
+            console.print()
 
     raise typer.Exit(code=result.exit_code)
 
@@ -268,11 +306,21 @@ def demo() -> None:
     console.rule("[bold red]1 of 2 — before the fix[/]")
     console.print(
         f"[dim]{len(FLAWED)} rows written to {DEMO_FILE}. One answer repeats a "
-        f"customer's bank details; one question tries a prompt injection, and it "
-        f"matches two known patterns.[/]\n"
+        f"customer's bank details; one question tries a prompt injection that "
+        f"matches known patterns.[/]\n"
     )
     write_dataset(FLAWED, DEMO_FILE)
-    guard = ServeXGuard(check_pii=True, check_injection=True, language="fr")
+    # Quality needs an LLM and this demo promises no setup, so it is switched
+    # off here rather than reported as a gap in a demo of the security scans.
+    guard = ServeXGuard(
+        min_faithfulness=0.0,
+        min_relevancy=0.0,
+        min_context_recall=0.0,
+        check_pii=True,
+        check_injection=True,
+        language="fr",
+        pii_presets=["ma"],
+    )
     before = guard.check(DEMO_FILE)
     reporter.render_terminal(before, console)
     console.print(
@@ -303,10 +351,11 @@ def demo() -> None:
     console.print(
         f"\n[bold]What just happened[/]\n"
         f"  The gate returns a non-zero exit code, so CI stops the merge.\n"
-        f"  Quality metrics need an extra: [bold]pip install servex-guard\\[eval][/]\n\n"
+        f"  Quality metrics need [bold]pip install servex-guard\\[eval][/] and an LLM.\n\n"
         f"[bold]Next[/]\n"
         f"  [dim]# {DEMO_FILE} is on disk with the problems back in. Edit it and rerun:[/]\n"
-        f"  servexguard check --dataset {DEMO_FILE} --check-pii --check-injection\n"
+        f"  servexguard check --dataset {DEMO_FILE} --check-pii --pii-preset ma "
+        f"--check-injection --allow-unmeasured\n"
     )
 
 
