@@ -204,6 +204,11 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
     if drift:
         console.print()
         c = drift[0]
+        if c.score is None:
+            console.print(f"  📈 Drift: [yellow]{c.details.get('reason')}[/]")
+            if c.details.get("fix"):
+                console.print(f"     {c.details['fix']}", markup=False)
+            return
         status = "[green]✅[/]" if c.passed else "[red]❌[/]"
         console.print(f"  📈 Drift Score: {c.score:.3f}  (max: {c.threshold})  {status}")
         if not c.passed:

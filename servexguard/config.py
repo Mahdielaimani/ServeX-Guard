@@ -77,7 +77,7 @@ class DriftConfig(BaseModel):
     """Query distribution drift settings."""
 
     enabled: bool = False
-    max_query_drift: float = 0.25
+    max_query_drift: float = 0.20
     baseline_file: str | None = None
 
 
@@ -275,7 +275,7 @@ security:
 
 drift:
   enabled: false
-  max_query_drift: 0.25
+  max_query_drift: 0.20
   baseline_file: "data/baseline_embeddings.npy"
 
 dataset:

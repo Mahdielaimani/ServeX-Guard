@@ -163,7 +163,7 @@ class ServeXGuard:
         check_pii: bool = False,
         check_injection: bool = False,
         check_drift: bool = False,
-        drift_threshold: float = 0.25,
+        drift_threshold: float = 0.20,
         baseline_path: str | None = None,
         language: str = "en",
         custom_entities: list[dict] | None = None,
@@ -379,12 +379,27 @@ class ServeXGuard:
         )
 
     def _run_drift_detection(self, data: list[dict]) -> CheckResult:
-        """Detect query distribution drift."""
-        from servexguard.drift import detect_drift
+        """Compare the questions with the saved baseline."""
+        from servexguard.drift import DriftNotMeasuredError, detect_drift
 
-        drift_score = detect_drift(
-            data, self.baseline_path, save_baseline=self.save_baseline
-        )
+        try:
+            drift_score = detect_drift(
+                data, self.baseline_path, save_baseline=self.save_baseline
+            )
+        except DriftNotMeasuredError as exc:
+            return CheckResult(
+                name="query_drift",
+                status=CheckStatus.NOT_MEASURED,
+                threshold=self.drift_threshold,
+                details={"reason": exc.reason, "fix": exc.fix},
+            )
+        if drift_score is None:
+            return CheckResult(
+                name="query_drift",
+                status=CheckStatus.SKIPPED,
+                threshold=self.drift_threshold,
+                details={"reason": "baseline saved, nothing compared on this run"},
+            )
         return CheckResult(
             name="query_drift",
             status=(

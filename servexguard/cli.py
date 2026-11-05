@@ -67,7 +67,7 @@ def check(
         None, "--check-drift/--no-check-drift", help="Enable query drift detection"
     ),
     drift_threshold: float | None = typer.Option(
-        None, "--drift-threshold", help="Maximum drift score [default: 0.25]"
+        None, "--drift-threshold", help="Maximum drift score [default: 0.20]"
     ),
     language: str | None = typer.Option(
         None, "--language", help="PII language: en | fr | ar [default: en]"
