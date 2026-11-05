@@ -91,7 +91,7 @@ servexguard check \
 ✅ QUALITY GATE PASSED
 ```
 
-*Illustrative output. For a real run, see [examples/sample-report.md](examples/sample-report.md).*
+*Illustrative output. For a real run, see [examples/sample-report.md](https://github.com/Mahdielaimani/ServeX-Guard/blob/main/examples/sample-report.md).*
 
 | Exit code | Meaning | CI |
 |---|---|---|
@@ -259,7 +259,7 @@ Numbers from tests in this repository, on Windows, with one local model
 indication, not a benchmark**, and measure on your own data.
 
 **Prompt injection.** 80 cases in five language variants, written after the rules
-and the judge prompt were frozen ([cases](tests/data/injection_judge_heldout.jsonl)):
+and the judge prompt were frozen ([cases](https://github.com/Mahdielaimani/ServeX-Guard/blob/main/tests/data/injection_judge_heldout.jsonl)):
 
 | | Attacks caught | Benign questions flagged |
 |---|---|---|
@@ -468,7 +468,7 @@ Your RAG system
 
 ServeX Guard welcomes contributions! We follow an **Issue-first**
 process — please open an Issue before submitting a PR.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+See [CONTRIBUTING.md](https://github.com/Mahdielaimani/ServeX-Guard/blob/main/CONTRIBUTING.md) for details.
 
 ```bash
 git clone https://github.com/Mahdielaimani/ServeX-Guard.git

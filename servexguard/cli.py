@@ -183,7 +183,8 @@ def check(
         check_pii=cfg.security.check_pii,
         check_injection=cfg.security.check_injection,
         llm_injection=cfg.security.llm_injection,
-        check_drift=cfg.drift.enabled,
+        # Asking to save a baseline is asking for the drift step to run.
+        check_drift=cfg.drift.enabled or save_baseline,
         drift_threshold=cfg.drift.max_query_drift,
         baseline_path=cfg.drift.baseline_file,
         language=cfg.security.language,
@@ -239,13 +240,17 @@ def check(
         console.print("[bold yellow]⛔ NOT MEASURED — Deployment blocked[/]")
         for c in result.not_measured:
             console.print(f"[yellow]   {c.name}: {c.details.get('reason')}[/]")
-        console.print(
-            "[dim]   Switch a metric off with a threshold of 0, or pass "
-            "--allow-unmeasured to accept the gap.[/]\n"
-        )
+        if any(c.name != "gate" for c in result.not_measured):
+            console.print(
+                "[dim]   Fix it, or pass --allow-unmeasured to accept the gap. A quality "
+                "metric can also be switched off with a threshold of 0.[/]"
+            )
+        console.print()
     else:
         unmeasured = [c.name for c in result.checks if c.status == CheckStatus.SKIPPED]
         console.print("[bold green]✅ QUALITY GATE PASSED[/]")
+        if result.baseline_saved:
+            console.print(f"[green]   Drift baseline saved to {cfg.drift.baseline_file}[/]")
         if unmeasured:
             console.print(f"[yellow]   Not checked: {', '.join(unmeasured)}[/]\n")
         else:

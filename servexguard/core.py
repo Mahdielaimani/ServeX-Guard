@@ -74,12 +74,14 @@ class GuardResult:
     """Aggregated result of all ServeXGuard checks."""
 
     checks: list[CheckResult] = field(default_factory=list)
+    # The run's purpose was to record a baseline, and it did.
+    baseline_saved: bool = False
 
     @property
     def passed(self) -> bool:
         """True only when something was measured and nothing failed or went unmeasured."""
         return (
-            any(c.status == CheckStatus.PASSED for c in self.checks)
+            (self.baseline_saved or any(c.status == CheckStatus.PASSED for c in self.checks))
             and not self.failures
             and not self.not_measured
         )
@@ -225,19 +227,30 @@ class ServeXGuard:
         if self.check_drift:
             drift_check = self._run_drift_detection(data)
             result.checks.append(drift_check)
+            result.baseline_saved = self.save_baseline and drift_check.status == (
+                CheckStatus.SKIPPED
+            )
 
         if self.allow_unmeasured:
             for c in result.not_measured:
                 c.status = CheckStatus.SKIPPED
-        elif not result.not_measured and not any(
-            c.status in (CheckStatus.PASSED, CheckStatus.FAILED) for c in result.checks
+
+        if (
+            not result.baseline_saved
+            and not result.not_measured
+            and not any(
+                c.status in (CheckStatus.PASSED, CheckStatus.FAILED) for c in result.checks
+            )
         ):
-            # Every check switched off is still not evidence of a safe deploy.
+            # Every check switched off is still not evidence of a safe deploy, and
+            # --allow-unmeasured accepts a gap, not the absence of any measurement.
             result.checks.append(
                 CheckResult(
                     name="gate",
                     status=CheckStatus.NOT_MEASURED,
-                    details={"reason": "every check is disabled, so nothing was measured"},
+                    details={
+                        "reason": "nothing was measured, so turn on at least one check"
+                    },
                 )
             )
 
