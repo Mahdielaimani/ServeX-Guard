@@ -10,6 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from servexguard.evaluator import LLMSettings
+
 # ── Input hardening limits ───────────────────────────────────────
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB — reject larger datasets
 MAX_ROWS = 10_000  # only the first 10K rows are processed
@@ -18,10 +20,27 @@ ALLOWED_DATASET_EXT = {".jsonl", ".json"}
 _TEXT_FIELDS = ("question", "answer", "ground_truth")
 
 
+# Exit codes. Distinct from 1 so CI can tell "your system is bad" from "nobody
+# looked", and from 2, which the CLI framework uses for bad arguments.
+EXIT_PASSED = 0
+EXIT_FAILED = 1
+EXIT_NOT_MEASURED = 3
+
+# Each quality check, with the attribute holding its threshold.
+_QUALITY_CHECKS = (
+    ("faithfulness", "min_faithfulness"),
+    ("answer_relevancy", "min_relevancy"),
+    ("context_recall", "min_context_recall"),
+)
+
+
 class CheckStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
+    # Switched off on purpose. Not part of the verdict.
     SKIPPED = "skipped"
+    # Asked for, but no evidence was produced. Never reads as a pass.
+    NOT_MEASURED = "not_measured"
 
 
 @dataclass
@@ -57,7 +76,23 @@ class GuardResult:
 
     @property
     def passed(self) -> bool:
-        return all(c.passed or c.status == CheckStatus.SKIPPED for c in self.checks)
+        """True only when something was measured and nothing failed or went unmeasured."""
+        return (
+            any(c.status == CheckStatus.PASSED for c in self.checks)
+            and not self.failures
+            and not self.not_measured
+        )
+
+    @property
+    def not_measured(self) -> list[CheckResult]:
+        return [c for c in self.checks if c.status == CheckStatus.NOT_MEASURED]
+
+    @property
+    def verdict(self) -> str:
+        """passed, failed, or not_measured. A real failure outranks missing evidence."""
+        if self.failures:
+            return "failed"
+        return "passed" if self.passed else "not_measured"
 
     # Quality metrics fail by falling below a floor; security checks fail by
     # counting above a ceiling. Printing both as "score < threshold" made every
@@ -68,7 +103,7 @@ class GuardResult:
     def failures(self) -> list[str]:
         out = []
         for c in self.checks:
-            if c.passed or c.status == CheckStatus.SKIPPED:
+            if c.status != CheckStatus.FAILED:
                 continue
             if c.score is None:
                 out.append(f"{c.name}: {c.details}")
@@ -85,14 +120,20 @@ class GuardResult:
 
     @property
     def exit_code(self) -> int:
-        """0 = passed, 1 = failed. Use in CI/CD."""
-        return 0 if self.passed else 1
+        """0 = passed, 1 = failed, 3 = not measured. Use in CI/CD."""
+        return {
+            "passed": EXIT_PASSED,
+            "failed": EXIT_FAILED,
+            "not_measured": EXIT_NOT_MEASURED,
+        }[self.verdict]
 
     def to_dict(self) -> dict:
         return {
             "passed": self.passed,
+            "verdict": self.verdict,
             "exit_code": self.exit_code,
             "failures": self.failures,
+            "not_measured": [c.name for c in self.not_measured],
             "checks": [c.to_dict() for c in self.checks],
         }
 
@@ -127,6 +168,8 @@ class ServeXGuard:
         language: str = "en",
         custom_entities: list[dict] | None = None,
         save_baseline: bool = False,
+        llm: LLMSettings | None = None,
+        allow_unmeasured: bool = False,
     ):
         self.min_faithfulness = min_faithfulness
         self.min_relevancy = min_relevancy
@@ -139,6 +182,8 @@ class ServeXGuard:
         self.language = language
         self.custom_entities = custom_entities or []
         self.save_baseline = save_baseline
+        self.llm = llm
+        self.allow_unmeasured = allow_unmeasured
 
     def check(self, dataset_path: str) -> GuardResult:
         """
@@ -172,6 +217,21 @@ class ServeXGuard:
         if self.check_drift:
             drift_check = self._run_drift_detection(data)
             result.checks.append(drift_check)
+
+        if self.allow_unmeasured:
+            for c in result.not_measured:
+                c.status = CheckStatus.SKIPPED
+        elif not result.not_measured and not any(
+            c.status in (CheckStatus.PASSED, CheckStatus.FAILED) for c in result.checks
+        ):
+            # Every check switched off is still not evidence of a safe deploy.
+            result.checks.append(
+                CheckResult(
+                    name="gate",
+                    status=CheckStatus.NOT_MEASURED,
+                    details={"reason": "every check is disabled, so nothing was measured"},
+                )
+            )
 
         return result
 
@@ -248,81 +308,46 @@ class ServeXGuard:
         return row
 
     def _run_quality(self, data: list[dict]) -> list[CheckResult]:
-        """Run RAGAS quality evaluation."""
-        from servexguard.evaluator import evaluate_quality
+        """Run the RAGAS metrics whose threshold is above zero.
 
-        scores = evaluate_quality(data)
+        A threshold of zero switches a metric off. Any other metric that cannot
+        be scored comes back NOT_MEASURED, which blocks the gate: a broken install
+        or an unreachable LLM must never read as a deploy that passed.
+        """
+        from servexguard.evaluator import QualityNotMeasuredError, evaluate_quality
 
-        # RAGAS is an optional extra. When it is absent nothing was measured, so
-        # these are skipped rather than failed: GuardResult.passed already
-        # ignores skipped checks, which stops a missing dependency from blocking
-        # a deploy nobody actually evaluated.
-        if scores is None:
-            return [
-                CheckResult(
-                    name=name,
-                    status=CheckStatus.SKIPPED,
-                    score=None,
-                    threshold=threshold,
-                    details={
-                        "reason": "RAGAS is not installed, so quality was not measured",
-                        "install": "pip install servex-guard[eval]",
-                    },
-                )
-                for name, threshold in (
-                    ("faithfulness", self.min_faithfulness),
-                    ("answer_relevancy", self.min_relevancy),
-                    ("context_recall", self.min_context_recall),
-                )
-            ]
+        thresholds = {name: getattr(self, attr) for name, attr in _QUALITY_CHECKS}
+        requested = [name for name, threshold in thresholds.items() if threshold > 0]
+
+        reasons: dict[str, dict[str, Any]] = {}
+        scores: dict[str, float] = {}
+        coverage: dict[str, float] = {}
+        if requested:
+            try:
+                outcome = evaluate_quality(data, requested, self.llm)
+            except QualityNotMeasuredError as exc:
+                reasons = {
+                    name: {"reason": exc.reason, "fix": exc.fix} for name in requested
+                }
+            else:
+                scores, coverage = outcome.scores, outcome.coverage
+                reasons = {
+                    name: {"reason": reason} for name, reason in outcome.unmeasured.items()
+                }
 
         checks = []
-
-        # Faithfulness
-        faith_score = scores.get("faithfulness", 0.0)
-        checks.append(
-            CheckResult(
-                name="faithfulness",
-                status=(
-                    CheckStatus.PASSED
-                    if faith_score >= self.min_faithfulness
-                    else CheckStatus.FAILED
-                ),
-                score=faith_score,
-                threshold=self.min_faithfulness,
-            )
-        )
-
-        # Answer Relevancy
-        rel_score = scores.get("answer_relevancy", 0.0)
-        checks.append(
-            CheckResult(
-                name="answer_relevancy",
-                status=(
-                    CheckStatus.PASSED
-                    if rel_score >= self.min_relevancy
-                    else CheckStatus.FAILED
-                ),
-                score=rel_score,
-                threshold=self.min_relevancy,
-            )
-        )
-
-        # Context Recall
-        recall_score = scores.get("context_recall", 0.0)
-        checks.append(
-            CheckResult(
-                name="context_recall",
-                status=(
-                    CheckStatus.PASSED
-                    if recall_score >= self.min_context_recall
-                    else CheckStatus.FAILED
-                ),
-                score=recall_score,
-                threshold=self.min_context_recall,
-            )
-        )
-
+        for name, threshold in thresholds.items():
+            if name not in requested:
+                status, score, details = (
+                    CheckStatus.SKIPPED, None, {"reason": "disabled by a threshold of 0"}
+                )
+            elif name in scores:
+                score = scores[name]
+                status = CheckStatus.PASSED if score >= threshold else CheckStatus.FAILED
+                details = {"coverage": round(coverage[name], 3)}
+            else:
+                status, score, details = CheckStatus.NOT_MEASURED, None, reasons[name]
+            checks.append(CheckResult(name, status, score, threshold, details))
         return checks
 
     def _run_pii_scan(self, data: list[dict]) -> CheckResult:

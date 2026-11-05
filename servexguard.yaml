@@ -6,6 +6,12 @@ quality:
   min_relevancy: 0.75
   min_context_recall: 0.70
 
+# The model that judges quality. Empty means no data leaves this machine.
+llm:
+  model: null
+  base_url: null
+  embedding_model: null
+
 security:
   check_pii: true
   pii_entities:

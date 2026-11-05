@@ -37,6 +37,21 @@ class QualityConfig(BaseModel):
     min_context_recall: float = 0.70
 
 
+class LLMConfig(BaseModel):
+    """The OpenAI-compatible endpoint that judges quality.
+
+    Empty by default, so nothing leaves the machine until someone names a model.
+    The key is read from the environment and never stored in this file.
+    """
+
+    model: str | None = None
+    base_url: str | None = None
+    embedding_model: str | None = None
+    api_key_env: str = "OPENAI_API_KEY"
+    timeout: int = 180
+    max_workers: int = 4
+
+
 class CustomEntity(BaseModel):
     """A user-defined PII entity (regex pattern + label).
 
@@ -83,6 +98,7 @@ class ServeXGuardConfig(BaseModel):
     """Top-level ServeXGuard configuration."""
 
     quality: QualityConfig = Field(default_factory=QualityConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     drift: DriftConfig = Field(default_factory=DriftConfig)
     dataset: DatasetConfig = Field(default_factory=DatasetConfig)
@@ -174,6 +190,9 @@ def merge_cli_overrides(
         "baseline": ("drift", "baseline_file"),
         "dataset": ("dataset", "path"),
         "output": ("output", "path"),
+        "llm_model": ("llm", "model"),
+        "llm_base_url": ("llm", "base_url"),
+        "llm_embedding_model": ("llm", "embedding_model"),
     }
 
     for flag, value in overrides.items():
@@ -225,6 +244,17 @@ quality:
   # min_faithfulness: 0.65
   # min_relevancy: 0.60
   # min_context_recall: 0.55
+  #
+  # A threshold of 0 switches that metric off.
+
+# The model that judges quality, on any OpenAI-compatible endpoint. Empty means
+# no data leaves this machine, and quality metrics report "not measured": the
+# gate then exits 3, unless their thresholds are 0 or you pass --allow-unmeasured.
+llm:
+  model: null            # e.g. mistral-small3.2
+  base_url: null         # e.g. http://localhost:11434/v1 for Ollama
+  embedding_model: null  # e.g. bge-m3 (needed for answer_relevancy)
+  api_key_env: OPENAI_API_KEY  # name of the variable, never the key itself
 
 security:
   check_pii: true

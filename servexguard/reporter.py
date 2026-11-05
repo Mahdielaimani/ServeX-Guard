@@ -75,7 +75,11 @@ def to_markdown(
     Returns:
         Markdown string.
     """
-    badge = "✅ **PASSED**" if result.passed else "🚫 **FAILED**"
+    badge = {
+        "passed": "✅ **PASSED**",
+        "failed": "🚫 **FAILED**",
+        "not_measured": "⛔ **NOT MEASURED**",
+    }[result.verdict]
     lines: list[str] = [
         "# 🛡️ ServeXGuard Quality Gate",
         "",
@@ -119,9 +123,14 @@ def to_markdown(
             "",
         ]
 
-    if not result.passed:
+    if result.failures:
         lines += ["## ❌ Failures", ""]
         lines += [f"- {f}" for f in result.failures]
+        lines.append("")
+
+    if result.not_measured:
+        lines += ["## ⛔ Not measured", ""]
+        lines += [f"- {c.name}: {c.details.get('reason')}" for c in result.not_measured]
         lines.append("")
 
     text = "\n".join(lines)
@@ -136,6 +145,8 @@ def _status_icon(check) -> str:
 
     if check.status == CheckStatus.SKIPPED:
         return "⏭️"
+    if check.status == CheckStatus.NOT_MEASURED:
+        return "⛔"
     return "✅" if check.passed else "❌"
 
 
@@ -157,24 +168,22 @@ def render_terminal(result: GuardResult, console: Console | None = None) -> None
         table.add_column("Score", justify="right")
         table.add_column("Threshold", justify="right")
         table.add_column("Status", justify="center")
-        skipped = [c for c in quality if c.status == CheckStatus.SKIPPED]
         for c in quality:
-            # A skipped check must not wear the same red cross as a failed one:
-            # one means "your system is bad", the other means "we did not look".
+            # Neither of these may wear the red cross of a failed check: that one
+            # means "your system is bad", these mean "we did not look".
             if c.status == CheckStatus.SKIPPED:
-                status, score_str = "[dim]skipped[/]", "[dim]not measured[/]"
+                status, score_str = "[dim]off[/]", "[dim]-[/]"
+            elif c.status == CheckStatus.NOT_MEASURED:
+                status, score_str = "[yellow]⛔[/]", "[yellow]not measured[/]"
             else:
                 status = "[green]✅[/]" if c.passed else "[red]❌[/]"
                 score_str = f"{c.score:.3f}" if c.score is not None else "-"
             thresh_str = f"{c.threshold:.2f}" if c.threshold is not None else "-"
             table.add_row(c.name, score_str, thresh_str, status)
         console.print(table)
-        if skipped:
-            console.print(
-                "  [yellow]Quality metrics were not measured.[/] RAGAS is an optional "
-                "extra:\n  [bold]pip install servex-guard\\[eval][/]  "
-                "[dim](security scans ran normally)[/]"
-            )
+        fixes = {c.details["fix"] for c in quality if c.details.get("fix")}
+        for fix in sorted(fixes):
+            console.print(f"  [yellow]To measure quality:[/] {fix}", markup=False)
 
     security = [c for c in result.checks if c.name in SECURITY_CHECKS]
     if security:

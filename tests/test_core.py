@@ -1,29 +1,96 @@
+"""Core gate behaviour."""
+
+import json
 
 
-def test_missing_ragas_skips_rather_than_fails(monkeypatch):
-    """A missing optional dependency must not block a deploy.
+def _core():
+    from servexguard import core
 
-    evaluate_quality returns None when RAGAS is absent. Those checks are then
-    skipped, and GuardResult.passed ignores skipped checks, so the gate reports
-    on what it actually measured instead of failing three metrics it never ran.
-    """
-    from servexguard import core as core_mod
+    return core
 
-    monkeypatch.setattr(core_mod, "_run_quality", None, raising=False)
-    guard = core_mod.ServeXGuard()
-    monkeypatch.setattr(
-        "servexguard.evaluator.evaluate_quality", lambda data: None
-    )
-    checks = guard._run_quality([{"question": "q", "answer": "a", "contexts": ["c"]}])
 
-    assert len(checks) == 3
-    assert all(c.status == core_mod.CheckStatus.SKIPPED for c in checks)
+ROW = {"question": "q", "answer": "a", "contexts": ["c"], "ground_truth": "g"}
+
+
+def _not_measured(*args, **kwargs):
+    from servexguard.evaluator import QualityNotMeasuredError
+
+    raise QualityNotMeasuredError("RAGAS is not installed", "pip install servex-guard[eval]")
+
+
+def test_requested_quality_that_cannot_run_blocks_the_gate(monkeypatch):
+    """A missing dependency must not read as a deploy that passed."""
+    core = _core()
+    monkeypatch.setattr("servexguard.evaluator.evaluate_quality", _not_measured)
+    checks = core.ServeXGuard()._run_quality([ROW])
+
+    assert [c.status for c in checks] == [core.CheckStatus.NOT_MEASURED] * 3
     assert all(c.score is None for c in checks)
 
-    result = core_mod.GuardResult(checks=list(checks))
-    assert result.passed is True
-    assert result.exit_code == 0
+    result = core.GuardResult(checks=checks)
+    assert result.passed is False
+    assert result.verdict == "not_measured"
+    assert result.exit_code == 3
     assert result.failures == []
+
+
+def test_a_real_failure_outranks_missing_evidence():
+    core = _core()
+    result = core.GuardResult(
+        checks=[
+            core.CheckResult("faithfulness", core.CheckStatus.NOT_MEASURED),
+            core.CheckResult("pii_scan", core.CheckStatus.FAILED, 1.0, 0.0),
+        ]
+    )
+    assert result.verdict == "failed"
+    assert result.exit_code == 1
+
+
+def test_threshold_zero_switches_a_metric_off_without_calling_the_llm(monkeypatch):
+    core = _core()
+    monkeypatch.setattr("servexguard.evaluator.evaluate_quality", _not_measured)
+    guard = core.ServeXGuard(min_faithfulness=0.0, min_relevancy=0.0, min_context_recall=0.0)
+    checks = guard._run_quality([ROW])
+    assert [c.status for c in checks] == [core.CheckStatus.SKIPPED] * 3
+
+
+def test_only_positive_thresholds_are_requested(monkeypatch):
+    from servexguard.evaluator import QualityScores
+
+    core = _core()
+    asked = []
+
+    def fake(data, metrics, llm):
+        asked.extend(metrics)
+        return QualityScores(scores={"faithfulness": 0.9}, coverage={"faithfulness": 1.0})
+
+    monkeypatch.setattr("servexguard.evaluator.evaluate_quality", fake)
+    guard = core.ServeXGuard(min_relevancy=0.0, min_context_recall=0.0)
+    checks = {c.name: c for c in guard._run_quality([ROW])}
+    assert asked == ["faithfulness"]
+    assert checks["faithfulness"].status == core.CheckStatus.PASSED
+    assert checks["faithfulness"].details == {"coverage": 1.0}
+
+
+def test_nothing_enabled_is_not_a_pass(monkeypatch, tmp_path):
+    """Every check off used to print PASSED, Safe to deploy, and exit 0."""
+    core = _core()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "d.jsonl").write_text(json.dumps(ROW), encoding="utf-8")
+    guard = core.ServeXGuard(min_faithfulness=0.0, min_relevancy=0.0, min_context_recall=0.0)
+    result = guard.check("d.jsonl")
+    assert result.verdict == "not_measured"
+    assert result.exit_code == 3
+
+
+def test_allow_unmeasured_accepts_the_gap_explicitly(monkeypatch, tmp_path):
+    core = _core()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("servexguard.evaluator.evaluate_quality", _not_measured)
+    (tmp_path / "d.jsonl").write_text(json.dumps(ROW), encoding="utf-8")
+    result = core.ServeXGuard(check_injection=True, allow_unmeasured=True).check("d.jsonl")
+    assert result.verdict == "passed"
+    assert result.exit_code == 0
 
 
 def test_security_failures_read_in_the_right_direction():
@@ -50,7 +117,14 @@ def test_demo_datasets_do_what_the_narration_claims(tmp_path, monkeypatch):
     from servexguard.demo import CLEAN, FLAWED, write_dataset
 
     monkeypatch.chdir(tmp_path)
-    guard = ServeXGuard(check_pii=True, check_injection=True, language="fr")
+    guard = ServeXGuard(
+        min_faithfulness=0.0,
+        min_relevancy=0.0,
+        min_context_recall=0.0,
+        check_pii=True,
+        check_injection=True,
+        language="fr",
+    )
 
     before = guard.check(str(write_dataset(FLAWED, tmp_path / "flawed.jsonl")))
     assert before.passed is False

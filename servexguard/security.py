@@ -70,6 +70,14 @@ _compiled_patterns = [
     re.compile(p, re.IGNORECASE) for p in INJECTION_PATTERNS
 ]
 
+# spaCy model families Presidio can use. Arabic has none, so it stays on regex.
+SPACY_MODEL_PREFIX = {
+    "en": "en_core_web",
+    "fr": "fr_core_news",
+    "es": "es_core_news",
+    "de": "de_core_news",
+}
+
 # ── Universal PII fallback patterns ──────────────────────────────
 # Order matters only for readability; each is scanned independently.
 UNIVERSAL_PII_PATTERNS: dict[str, str] = {
@@ -111,6 +119,49 @@ def _compile_custom_entities(
     return compiled
 
 
+def _build_analyzer(language: str):
+    """Build a Presidio analyzer from spaCy models that are already installed.
+
+    Presidio's default engine downloads a 400 MB English model at runtime, and
+    would analyse French or Arabic text with it. Neither is acceptable in a tool
+    that promises to run offline, so a missing model means the regex patterns,
+    with a warning that says how to get the better detector.
+
+    Args:
+        language: Language code to analyse.
+
+    Returns:
+        A ready analyzer, or ``None`` when Presidio or its model is unavailable.
+    """
+    try:
+        import spacy
+        from presidio_analyzer import AnalyzerEngine
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
+    except ImportError:
+        logger.warning(
+            "Presidio not installed, using regex patterns. Run: pip install servex-guard[pii]"
+        )
+        return None
+
+    prefix = SPACY_MODEL_PREFIX.get(language)
+    candidates = [f"{prefix}_{size}" for size in ("lg", "md", "sm")] if prefix else []
+    model = next((name for name in candidates if spacy.util.is_package(name)), None)
+    if model is None:
+        hint = f" Run: python -m spacy download {candidates[-1]}" if candidates else ""
+        logger.warning(
+            "No spaCy model installed for language %r, using regex patterns.%s", language, hint
+        )
+        return None
+
+    engine = NlpEngineProvider(
+        nlp_configuration={
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": language, "model_name": model}],
+        }
+    ).create_engine()
+    return AnalyzerEngine(nlp_engine=engine, supported_languages=[language])
+
+
 def scan_pii(
     data: list[dict],
     language: str = "en",
@@ -131,10 +182,11 @@ def scan_pii(
     Returns:
         List of detected PII leaks with location and type.
     """
-    try:
-        from presidio_analyzer import AnalyzerEngine
+    analyzer = _build_analyzer(language)
+    if analyzer is None:
+        return _scan_pii_fallback(data, custom_entities=custom_entities)
 
-        analyzer = AnalyzerEngine()
+    try:
         entities = [
             "EMAIL_ADDRESS",
             "PHONE_NUMBER",
@@ -153,19 +205,9 @@ def scan_pii(
             if not answer:
                 continue
 
-            try:
-                results = analyzer.analyze(
-                    text=answer, entities=entities, language=language
-                )
-            except Exception as exc:  # unsupported/missing language model
-                logger.warning(
-                    "Presidio language %r unavailable (%s); falling back to 'en'",
-                    language,
-                    exc,
-                )
-                results = analyzer.analyze(
-                    text=answer, entities=entities, language="en"
-                )
+            results = analyzer.analyze(
+                text=answer, entities=entities, language=language
+            )
 
             for result in results:
                 if result.score >= 0.7:
@@ -181,8 +223,8 @@ def scan_pii(
         logger.info("PII scan: %d leaks in %d answers", len(leaks), len(data))
         return leaks
 
-    except ImportError:
-        logger.warning("Presidio not installed. Run: pip install presidio-analyzer")
+    except Exception as exc:  # a scan that dies must not take the gate down with it
+        logger.warning("Presidio scan failed (%s); using regex patterns", exc)
         return _scan_pii_fallback(data, custom_entities=custom_entities)
 
 
@@ -246,14 +288,12 @@ def _make_leak(
 
 
 def _count_tokens(text: str) -> int:
-    """Count tokens with tiktoken if available, else a whitespace estimate."""
-    try:
-        import tiktoken
+    """Estimate tokens at four characters each, the usual rule of thumb.
 
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except Exception:
-        return len(text.split())
+    Only feeds a warning. tiktoken would fetch its encoding from the internet on
+    first use, which is a poor trade for a slightly better estimate.
+    """
+    return max(len(text.split()), len(text) // 4)
 
 
 def scan_injection(data: list[dict]) -> list[dict]:
