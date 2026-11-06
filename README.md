@@ -174,13 +174,15 @@ servexguard check --dataset golden_dataset.jsonl \
 
 ### Send results to ServeX Guard Cloud (optional)
 
-`--upload` posts the computed report to your Cloud dashboard. Everything is still
+**The hosted Cloud is not in service at the moment, so leave this flag off.**
+Evaluation, security scans, reports and exit codes do not need it.
+
+`--upload` posts the computed report to a Cloud endpoint. Everything is still
 computed locally. The Cloud receives scores, counts and finding types, with
-anything quoted from your dataset removed. The hosted dashboard is available on
-request.
+anything quoted from your dataset removed.
 
 ```bash
-export SERVEXGUARD_API_KEY=sxg_...          # from dashboard.servexguard.com → Settings
+export SERVEXGUARD_API_KEY=sxg_...
 servexguard check --dataset golden_dataset.jsonl --upload --project my-rag-app
 ```
 
